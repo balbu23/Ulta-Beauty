@@ -238,12 +238,12 @@ export default function App() {
         
         {/* Identificador de Usuaria Activa */}
         <div className="mt-1 flex items-center justify-center gap-2">
-          <span className="text-xs text-slate-500 font-medium">¡HOLAA! <strong className="text-rose-600 font-bold">{nombreUsuario}</strong></span>
+          <span className="text-xs text-slate-500 font-medium">¡HOLA! <strong className="text-rose-600 font-bold">{nombreUsuario}</strong></span>
           <button 
             onClick={() => { setInputNombre(nombreUsuario); setEditandoUsuario(true); }}
             className="text-[10px] bg-slate-200/80 hover:bg-slate-300 text-slate-700 px-2 py-0.5 rounded-md font-semibold transition"
           >
-            Cambiar 🔄
+            Cambiar
           </button>
         </div>
       </header>
