@@ -137,15 +137,16 @@ export default function App() {
 
     const { data, error } = await supabase
       .from('registros_conteo')
-      .select('created_at, cantidad_piso, tipo_registro, productos(nombre, codigo_barras)')
+      .select('id, created_at, cantidad_piso, tipo_registro, productos(nombre, codigo_barras)')
       .gte('created_at', inicioHoy.toISOString())
       .order('created_at', { ascending: true });
 
     if (error || !data || data.length === 0) {
-      alert("No hay conteos registrados el día de hoy.");
+      alert("No hay conteos registrados en la bolsa para exportar.");
       return;
     }
 
+    // 1. Crear y descargar el archivo Excel
     const datosFormateados = data.map(row => ({
       'Hora': new Date(row.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       'Código': row.productos?.codigo_barras || '',
@@ -159,6 +160,22 @@ export default function App() {
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, "Conteos Hoy");
     XLSX.writeFile(workbook, `Reporte_Inventario_${fechaHoy}.xlsx`);
+
+    // 2. Vaciar los registros procesados de la bolsa
+    const idsAEliminar = data.map(item => item.id);
+    const { error: deleteError } = await supabase
+      .from('registros_conteo')
+      .delete()
+      .in('id', idsAEliminar);
+
+    if (deleteError) {
+      console.error("Error al vaciar la bolsa:", deleteError);
+    } else {
+      setMensaje('¡Excel exportado y bolsa vaciada a 0 unidades!');
+      setMostrarDetalleHoy(false);
+      cargarTotalHoy(); // Reinicia el contador a 0 en pantalla
+      setTimeout(() => setMensaje(''), 4000);
+    }
   };
 
   return (
