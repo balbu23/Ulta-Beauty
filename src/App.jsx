@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react'; //se puede
 import { supabase } from './supabaseClient';
 import { Scanner } from './components/Scanner';
 import * as XLSX from 'xlsx';
