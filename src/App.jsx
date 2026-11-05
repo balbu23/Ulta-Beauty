@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { supabase } from './supabaseClient';
 import { Scanner } from './components/Scanner';
 import * as XLSX from 'xlsx';
-import { Scan, Plus, FileSpreadsheet, Sparkles, CheckCircle2, PackageCheck, ShoppingBag } from 'lucide-react';
+import { Scan, Plus, FileSpreadsheet, Sparkles, CheckCircle2, PackageCheck, ShoppingBag, ChevronDown, ChevronUp } from 'lucide-react';
 
 export default function App() {
   const [scanning, setScanning] = useState(false);
@@ -12,24 +12,44 @@ export default function App() {
   const [mensaje, setMensaje] = useState('');
   const [totalHoy, setTotalHoy] = useState(0);
 
+  // Estado para desplegar el resumen por productos
+  const [mostrarDetalleHoy, setMostrarDetalleHoy] = useState(false);
+  const [listaHoy, setListaHoy] = useState([]);
+
   // Formulario para producto nuevo
   const [nuevoNombre, setNuevoNombre] = useState('');
   const [codigoEscaneado, setCodigoEscaneado] = useState('');
   const [esNuevo, setEsNuevo] = useState(false);
 
-  // Cargar el total acumulado del día actual
+  // Cargar el total acumulado y desglose por producto del día
   const cargarTotalHoy = async () => {
     const inicioHoy = new Date();
     inicioHoy.setHours(0, 0, 0, 0);
 
     const { data, error } = await supabase
       .from('registros_conteo')
-      .select('cantidad_piso')
+      .select('cantidad_piso, productos(nombre, codigo_barras)')
       .gte('created_at', inicioHoy.toISOString());
 
     if (!error && data) {
+      // Suma total de unidades
       const suma = data.reduce((acc, curr) => acc + (curr.cantidad_piso || 0), 0);
       setTotalHoy(suma);
+
+      // Agrupar totales por cada producto escaneado hoy
+      const acumulado = {};
+      data.forEach(item => {
+        const nombre = item.productos?.nombre || 'Producto sin nombre';
+        const codigo = item.productos?.codigo_barras || '';
+        const key = `${nombre}_${codigo}`;
+
+        if (!acumulado[key]) {
+          acumulado[key] = { nombre, codigo, cantidad: 0 };
+        }
+        acumulado[key].cantidad += item.cantidad_piso || 0;
+      });
+
+      setListaHoy(Object.values(acumulado));
     }
   };
 
@@ -100,7 +120,7 @@ export default function App() {
       setCantidad(1);
       setTipoRegistro('corte_horario');
 
-      // Actualizar el contador del día en vivo inmediatamente
+      // Actualizar total y desglose inmediatamente
       cargarTotalHoy();
 
       setTimeout(() => setMensaje(''), 3000);
@@ -146,24 +166,57 @@ export default function App() {
       {/* Encabezado Estilo Beauty */}
       <header className="mb-4 text-center pt-2">
         <div className="inline-flex items-center gap-1.5 px-3.5 py-1 bg-rose-100/80 text-rose-700 rounded-full text-xs font-bold tracking-wide uppercase mb-2 border border-rose-200">
-          <Sparkles size={14} /> Ulta Beauty
+          <Sparkles size={14} /> Belleza Ulta
         </div>
         <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">Control de Productos</h1>
         <p className="text-xs text-rose-500 font-semibold mt-0.5">Monitoreo y Conteo en Piso de Venta</p>
       </header>
 
-      {/* Tarjeta Resumen del Día */}
-      <div className="bg-white/90 backdrop-blur border border-rose-100 rounded-2xl p-4 mb-4 shadow-sm flex items-center justify-between">
-        <div>
-          <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Total Escaneado Hoy</p>
-          <div className="flex items-baseline gap-1.5 mt-0.5">
-            <span className="text-3xl font-black text-rose-600">{totalHoy}</span>
-            <span className="text-xs font-bold text-slate-600">unidades registradas</span>
+      {/* Tarjeta Resumen del Día Interactiva */}
+      <div className="bg-white/90 backdrop-blur border border-rose-100 rounded-2xl p-4 mb-4 shadow-sm">
+        <div 
+          onClick={() => setMostrarDetalleHoy(!mostrarDetalleHoy)}
+          className="flex items-center justify-between cursor-pointer select-none"
+        >
+          <div>
+            <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1">
+              Total Escaneado Hoy {mostrarDetalleHoy ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+            </p>
+            <div className="flex items-baseline gap-1.5 mt-0.5">
+              <span className="text-3xl font-black text-rose-600">{totalHoy}</span>
+              <span className="text-xs font-bold text-slate-600">unidades registradas</span>
+            </div>
+          </div>
+          <div className="w-12 h-12 bg-rose-100 text-rose-600 rounded-xl flex items-center justify-center font-bold shrink-0 shadow-sm active:scale-95 transition">
+            <ShoppingBag size={22} />
           </div>
         </div>
-        <div className="w-12 h-12 bg-rose-100 text-rose-600 rounded-xl flex items-center justify-center font-bold shrink-0">
-          <ShoppingBag size={22} />
-        </div>
+
+        {/* Lista Desplegable de Productos Escaneados Hoy */}
+        {mostrarDetalleHoy && (
+          <div className="mt-4 pt-3 border-t border-rose-100 space-y-2">
+            <h3 className="text-xs font-extrabold text-slate-700 uppercase tracking-wider mb-2">
+              Desglose por Producto ({listaHoy.length})
+            </h3>
+            {listaHoy.length === 0 ? (
+              <p className="text-xs text-slate-400 italic">No se han registrado productos hoy.</p>
+            ) : (
+              <div className="max-h-52 overflow-y-auto space-y-2 pr-1">
+                {listaHoy.map((item, index) => (
+                  <div key={index} className="flex justify-between items-center bg-rose-50/70 p-2.5 rounded-xl border border-rose-100/80">
+                    <div className="max-w-[75%]">
+                      <p className="text-xs font-bold text-slate-800 truncate">{item.nombre}</p>
+                      <p className="text-[10px] text-slate-400 font-mono">{item.codigo}</p>
+                    </div>
+                    <span className="px-2.5 py-1 bg-white text-rose-600 font-black text-xs rounded-lg shadow-sm border border-rose-100 shrink-0">
+                      {item.cantidad} pcs
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Alerta de confirmación */}
@@ -266,7 +319,6 @@ export default function App() {
             Guardar Conteo
           </button>
 
-          {/* Botón para cerrar manualmente la tarjeta */}
           <button
             onClick={() => {
               setProducto(null);
