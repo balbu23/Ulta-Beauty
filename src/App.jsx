@@ -1,8 +1,8 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { supabase } from './supabaseClient';
 import { Scanner } from './components/Scanner';
 import * as XLSX from 'xlsx';
-import { Scan, Plus, FileSpreadsheet, Sparkles, CheckCircle2, PackageCheck } from 'lucide-react';
+import { Scan, Plus, FileSpreadsheet, Sparkles, CheckCircle2, PackageCheck, ShoppingBag } from 'lucide-react';
 
 export default function App() {
   const [scanning, setScanning] = useState(false);
@@ -10,11 +10,32 @@ export default function App() {
   const [cantidad, setCantidad] = useState(1);
   const [tipoRegistro, setTipoRegistro] = useState('corte_horario');
   const [mensaje, setMensaje] = useState('');
+  const [totalHoy, setTotalHoy] = useState(0);
 
   // Formulario para producto nuevo
   const [nuevoNombre, setNuevoNombre] = useState('');
   const [codigoEscaneado, setCodigoEscaneado] = useState('');
   const [esNuevo, setEsNuevo] = useState(false);
+
+  // Cargar el total acumulado del día actual
+  const cargarTotalHoy = async () => {
+    const inicioHoy = new Date();
+    inicioHoy.setHours(0, 0, 0, 0);
+
+    const { data, error } = await supabase
+      .from('registros_conteo')
+      .select('cantidad_piso')
+      .gte('created_at', inicioHoy.toISOString());
+
+    if (!error && data) {
+      const suma = data.reduce((acc, curr) => acc + (curr.cantidad_piso || 0), 0);
+      setTotalHoy(suma);
+    }
+  };
+
+  useEffect(() => {
+    cargarTotalHoy();
+  }, []);
 
   const handleScan = async (code) => {
     setScanning(false);
@@ -36,28 +57,28 @@ export default function App() {
   };
 
   const crearProducto = async () => {
-  if (!nuevoNombre) return;
+    if (!nuevoNombre) return;
 
-  const { data, error } = await supabase
-    .from('productos')
-    .insert([{ codigo_barras: codigoEscaneado, nombre: nuevoNombre }])
-    .select()
-    .single();
+    const { data, error } = await supabase
+      .from('productos')
+      .insert([{ codigo_barras: codigoEscaneado, nombre: nuevoNombre }])
+      .select()
+      .single();
 
-  if (error) {
-    alert("Error al guardar en Supabase: " + error.message);
-    console.error(error);
-    return;
-  }
+    if (error) {
+      alert("Error al guardar en Supabase: " + error.message);
+      console.error(error);
+      return;
+    }
 
-  if (data) {
-    setProducto(data);
-    setEsNuevo(false);
-    setNuevoNombre('');
-  }
-};
+    if (data) {
+      setProducto(data);
+      setEsNuevo(false);
+      setNuevoNombre('');
+    }
+  };
 
-const guardarRegistro = async () => {
+  const guardarRegistro = async () => {
     if (!producto) return;
 
     try {
@@ -78,44 +99,72 @@ const guardarRegistro = async () => {
       setProducto(null);
       setCantidad(1);
       setTipoRegistro('corte_horario');
+
+      // Actualizar el contador del día en vivo inmediatamente
+      cargarTotalHoy();
+
       setTimeout(() => setMensaje(''), 3000);
 
     } catch (err) {
       console.error(err);
-
       setProducto(null);
     }
   };
 
-  const exportarExcel = async () => {
-    const { data } = await supabase
+  const exportarExcelHoy = async () => {
+    const inicioHoy = new Date();
+    inicioHoy.setHours(0, 0, 0, 0);
+
+    const { data, error } = await supabase
       .from('registros_conteo')
-      .select('created_at, cantidad_piso, tipo_registro, productos(nombre, codigo_barras)');
+      .select('created_at, cantidad_piso, tipo_registro, productos(nombre, codigo_barras)')
+      .gte('created_at', inicioHoy.toISOString())
+      .order('created_at', { ascending: true });
+
+    if (error || !data || data.length === 0) {
+      alert("No hay conteos registrados el día de hoy.");
+      return;
+    }
 
     const datosFormateados = data.map(row => ({
-      'Fecha y Hora': new Date(row.created_at).toLocaleString(),
+      'Hora': new Date(row.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       'Código': row.productos?.codigo_barras || '',
       'Producto': row.productos?.nombre || '',
       'Cantidad en Piso': row.cantidad_piso,
       'Evento': row.tipo_registro
     }));
 
+    const fechaHoy = new Date().toISOString().slice(0, 10);
     const worksheet = XLSX.utils.json_to_sheet(datosFormateados);
     const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Conteos");
-    XLSX.writeFile(workbook, `Reporte_Inventario_${new Date().toISOString().slice(0,10)}.xlsx`);
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Conteos Hoy");
+    XLSX.writeFile(workbook, `Reporte_Inventario_${fechaHoy}.xlsx`);
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-rose-50 via-pink-50/50 to-slate-100 p-4 max-w-md mx-auto text-slate-800 font-sans">
+    <div className="min-h-screen bg-gradient-to-b from-rose-50 via-pink-50/50 to-slate-100 p-4 max-w-md mx-auto text-slate-800 font-sans pb-10">
       {/* Encabezado Estilo Beauty */}
-      <header className="mb-6 text-center pt-2">
+      <header className="mb-4 text-center pt-2">
         <div className="inline-flex items-center gap-1.5 px-3.5 py-1 bg-rose-100/80 text-rose-700 rounded-full text-xs font-bold tracking-wide uppercase mb-2 border border-rose-200">
           <Sparkles size={14} /> Ulta Beauty
         </div>
         <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">Control de Productos</h1>
         <p className="text-xs text-rose-500 font-semibold mt-0.5">Monitoreo y Conteo en Piso de Venta</p>
       </header>
+
+      {/* Tarjeta Resumen del Día */}
+      <div className="bg-white/90 backdrop-blur border border-rose-100 rounded-2xl p-4 mb-4 shadow-sm flex items-center justify-between">
+        <div>
+          <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Total Escaneado Hoy</p>
+          <div className="flex items-baseline gap-1.5 mt-0.5">
+            <span className="text-3xl font-black text-rose-600">{totalHoy}</span>
+            <span className="text-xs font-bold text-slate-600">unidades registradas</span>
+          </div>
+        </div>
+        <div className="w-12 h-12 bg-rose-100 text-rose-600 rounded-xl flex items-center justify-center font-bold shrink-0">
+          <ShoppingBag size={22} />
+        </div>
+      </div>
 
       {/* Alerta de confirmación */}
       {mensaje && (
@@ -126,7 +175,7 @@ const guardarRegistro = async () => {
       )}
 
       {/* Botón Principal de Escaneo */}
-      {!scanning && (
+      {!scanning && !producto && !esNuevo && (
         <button
           onClick={() => setScanning(true)}
           className="w-full bg-gradient-to-r from-rose-500 via-pink-500 to-rose-600 text-white py-4 px-6 rounded-2xl font-bold flex items-center justify-center gap-3 shadow-lg shadow-rose-500/25 active:scale-95 transition-all hover:brightness-105"
@@ -150,7 +199,7 @@ const guardarRegistro = async () => {
 
       {/* Registrar Nuevo Producto */}
       {esNuevo && (
-        <div className="mt-6 bg-white p-5 rounded-2xl shadow-lg border border-amber-200">
+        <div className="mt-4 bg-white p-5 rounded-2xl shadow-lg border border-amber-200">
           <div className="flex items-center gap-2 mb-2 text-amber-700">
             <PackageCheck size={20} />
             <h2 className="font-bold text-base">Producto Nuevo Detectado</h2>
@@ -174,7 +223,7 @@ const guardarRegistro = async () => {
 
       {/* Producto Encontrado */}
       {producto && (
-        <div className="mt-6 bg-white p-5 rounded-2xl shadow-xl border border-rose-100 space-y-4">
+        <div className="mt-4 bg-white p-5 rounded-2xl shadow-xl border border-rose-100 space-y-4">
           <div className="border-b border-slate-100 pb-3">
             <span className="text-[10px] font-bold tracking-wider uppercase px-2 py-0.5 bg-rose-100 text-rose-700 rounded-md">Producto Seleccionado</span>
             <h2 className="text-lg font-bold text-slate-900 mt-1">{producto.nombre}</h2>
@@ -209,6 +258,7 @@ const guardarRegistro = async () => {
               >+</button>
             </div>
           </div>
+
           <button
             onClick={guardarRegistro}
             className="w-full bg-gradient-to-r from-rose-600 to-pink-600 text-white py-3.5 rounded-xl font-bold shadow-md shadow-rose-500/20 active:scale-95 transition"
@@ -230,12 +280,12 @@ const guardarRegistro = async () => {
       )}
 
       {/* Sección de Exportar */}
-      <div className="mt-8 pt-5 border-t border-rose-100">
+      <div className="mt-6 pt-4 border-t border-rose-100">
         <button
-          onClick={exportarExcel}
+          onClick={exportarExcelHoy}
           className="w-full bg-slate-900 hover:bg-slate-800 text-white py-3.5 px-4 rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow transition"
         >
-          <FileSpreadsheet size={18} className="text-emerald-400" /> Exportar Reporte a Excel
+          <FileSpreadsheet size={18} className="text-emerald-400" /> Exportar Informe del Día a Excel
         </button>
       </div>
     </div>
