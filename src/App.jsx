@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'; //se puede
+import { useState, useEffect } from 'react';
 import { supabase } from './supabaseClient';
 import { Scanner } from './components/Scanner';
 import * as XLSX from 'xlsx';
@@ -25,8 +25,51 @@ export default function App() {
   const [nuevoNombre, setNuevoNombre] = useState('');
   const [codigoEscaneado, setCodigoEscaneado] = useState('');
   const [esNuevo, setEsNuevo] = useState(false);
+  const [procesando, setProcesando] = useState(false);
 
-  // Cargar el total acumulado y desglose por producto DEL USUARIO ACTUAL
+  // 1. Escuchar cuando regrese el Wi-Fi/datos y subir escaneos pendientes
+  useEffect(() => {
+    const sincronizarOffline = async () => {
+      const cola = JSON.parse(localStorage.getItem('cola_escaneos') || '[]');
+      if (cola.length > 0 && navigator.onLine) {
+        const { error } = await supabase.from('registros_conteo').insert(cola);
+        if (!error) {
+          localStorage.removeItem('cola_escaneos');
+          setMensaje('¡Escaneos guardados offline sincronizados exitosamente!');
+          cargarTotalHoy();
+          setTimeout(() => setMensaje(''), 4000);
+        }
+      }
+    };
+
+    window.addEventListener('online', sincronizarOffline);
+    sincronizarOffline();
+
+    return () => window.removeEventListener('online', sincronizarOffline);
+  }, [nombreUsuario]);
+
+  // 2. Despertar la cámara si la usuaria bloqueó el celular o cambió de app
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible' && scanning) {
+        setScanning(false);
+        setTimeout(() => setScanning(true), 150);
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => document.removeEventListener('visibilitychange', handleVisibility);
+  }, [scanning]);
+
+  // 3. Mantener el token JWT de Supabase refrescado automáticamente
+  useEffect(() => {
+    const { data: authListener } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'TOKEN_REFRESHED') {
+        console.log('Sesión de Supabase renovada en segundo plano');
+      }
+    });
+    return () => authListener?.subscription?.unsubscribe();
+  }, []);
+
   const cargarTotalHoy = async () => {
     if (!nombreUsuario) return;
 
@@ -96,7 +139,10 @@ export default function App() {
 
     const { data, error } = await supabase
       .from('productos')
-      .insert([{ codigo_barras: codigoEscaneado, nombre: nuevoNombre }])
+      .upsert(
+        { codigo_barras: codigoEscaneado, nombre: nuevoNombre },
+        { onConflict: 'codigo_barras' }
+      )
       .select()
       .single();
 
@@ -113,35 +159,71 @@ export default function App() {
     }
   };
 
-  const guardarRegistro = async () => {
-    if (!producto || !nombreUsuario) return;
+  const guardarRegistro = async (codigoParam, datosProductoParam) => {
+    if (procesando) return; // Freno contra lecturas dobles muy rápidas
+    setProcesando(true);
 
-    try {
-      const { error } = await supabase
-        .from('registros_conteo')
-        .insert([{
-          producto_id: producto.id,
-          cantidad_piso: cantidad,
-          tipo_registro: tipoRegistro,
-          usuario: nombreUsuario
-        }]);
+    // Determina el código y nombre del producto de forma segura
+    const codigo = typeof codigoParam === 'string' ? codigoParam : (producto?.codigo_barras || codigoEscaneado);
+    const nombreProd = datosProductoParam?.nombre || producto?.nombre || nuevoNombre || 'Producto Escaneado';
 
-      if (error) {
-        alert("Error al guardar conteo: " + error.message);
-        return;
-      }
+    if (!codigo) {
+      setMensaje('Error: No hay un código válido para registrar.');
+      setProcesando(false);
+      return;
+    }
 
-      setMensaje('¡Conteo guardado con éxito!');
+    const nuevoRegistro = {
+      codigo_barras: codigo,
+      usuario: nombreUsuario,
+      tipo_registro: tipoRegistro,
+      cantidad_piso: cantidad
+    };
+
+    // --- Si el celular NO tiene internet ---
+    if (!navigator.onLine) {
+      const cola = JSON.parse(localStorage.getItem('cola_escaneos') || '[]');
+      cola.push(nuevoRegistro);
+      localStorage.setItem('cola_escaneos', JSON.stringify(cola));
+      setMensaje('Sin conexión: producto guardado localmente.');
       setProducto(null);
       setCantidad(1);
-      setTipoRegistro('corte_horario');
+      setProcesando(false);
+      setTimeout(() => setMensaje(''), 4000);
+      return;
+    }
 
-      cargarTotalHoy();
-      setTimeout(() => setMensaje(''), 3000);
+    // --- Si TIENE internet: usa upsert en catálogo e inserta conteo ---
+    try {
+      // 1. Guardar o actualizar en catálogo general sin duplicar errores
+      await supabase
+        .from('productos')
+        .upsert(
+          { codigo_barras: codigo, nombre: nombreProd },
+          { onConflict: 'codigo_barras' }
+        );
 
-    } catch (err) {
-      console.error(err);
+      // 2. Registrar la unidad escaneada
+      const { error } = await supabase.from('registros_conteo').insert([nuevoRegistro]);
+
+      if (error) throw error;
+
+      setMensaje('¡Producto registrado correctamente!');
       setProducto(null);
+      setCantidad(1);
+      cargarTotalHoy();
+      setTimeout(() => setMensaje(''), 4000);
+    } catch (err) {
+      console.error('Error al guardar:', err.message);
+      setMensaje('Error de red. Guardado en memoria local.');
+      const cola = JSON.parse(localStorage.getItem('cola_escaneos') || '[]');
+      cola.push(nuevoRegistro);
+      localStorage.setItem('cola_escaneos', JSON.stringify(cola));
+      setProducto(null);
+      setCantidad(1);
+      setTimeout(() => setMensaje(''), 4000);
+    } finally {
+      setTimeout(() => setProcesando(false), 1200);
     }
   };
 
@@ -366,6 +448,7 @@ export default function App() {
               onChange={(e) => setTipoRegistro(e.target.value)}
               className="w-full p-3 border border-slate-200 rounded-xl bg-slate-50 text-sm font-medium focus:outline-none focus:border-rose-400"
             >   
+              <option value="corte_horario">⏱️ Corte Horario</option>
               <option value="inicio_turno">🔓 Inicio de Turno</option>
               <option value="fin_turno">🔒 Fin de Turno</option>
             </select>
@@ -387,10 +470,13 @@ export default function App() {
           </div>
 
           <button
-            onClick={guardarRegistro}
-            className="w-full bg-gradient-to-r from-rose-600 to-pink-600 text-white py-3.5 rounded-xl font-bold shadow-md shadow-rose-500/20 active:scale-95 transition"
+            onClick={() => guardarRegistro(producto?.codigo_barras, producto)}
+            disabled={procesando}
+            className={`w-full text-white py-3.5 rounded-xl font-bold shadow-md shadow-rose-500/20 active:scale-95 transition ${
+              procesando ? 'bg-slate-400 cursor-not-allowed' : 'bg-gradient-to-r from-rose-600 to-pink-600'
+            }`}
           >
-            Registar Conteo
+            {procesando ? 'Guardando...' : 'Registrar Conteo'}
           </button>
 
           <button
