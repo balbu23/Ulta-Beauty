@@ -238,12 +238,12 @@ export default function App() {
         
         {/* Identificador de Usuaria Activa */}
         <div className="mt-1 flex items-center justify-center gap-2">
-          <span className="text-xs text-slate-500 font-medium">Turno de: <strong className="text-rose-600 font-bold">{nombreUsuario}</strong></span>
+          <span className="text-xs text-slate-500 font-medium">¡HOLAA! <strong className="text-rose-600 font-bold">{nombreUsuario}</strong></span>
           <button 
             onClick={() => { setInputNombre(nombreUsuario); setEditandoUsuario(true); }}
             className="text-[10px] bg-slate-200/80 hover:bg-slate-300 text-slate-700 px-2 py-0.5 rounded-md font-semibold transition"
           >
-            Cambiar
+            Cambiar 🔄
           </button>
         </div>
       </header>
@@ -354,7 +354,7 @@ export default function App() {
       {producto && (
         <div className="mt-4 bg-white p-5 rounded-2xl shadow-xl border border-rose-100 space-y-4">
           <div className="border-b border-slate-100 pb-3">
-            <span className="text-[10px] font-bold tracking-wider uppercase px-2 py-0.5 bg-rose-100 text-rose-700 rounded-md">Producto Seleccionado</span>
+            <span className="text-[10px] font-bold tracking-wider uppercase px-2 py-0.5 bg-rose-100 text-rose-700 rounded-md">Producto Escaneado</span>
             <h2 className="text-lg font-bold text-slate-900 mt-1">{producto.nombre}</h2>
             <p className="text-xs text-slate-400 font-mono mt-0.5">EAN: {producto.codigo_barras}</p>
           </div>
@@ -365,11 +365,9 @@ export default function App() {
               value={tipoRegistro}
               onChange={(e) => setTipoRegistro(e.target.value)}
               className="w-full p-3 border border-slate-200 rounded-xl bg-slate-50 text-sm font-medium focus:outline-none focus:border-rose-400"
-            >
-              <option value="corte_horario">🕒 Corte Horario (Revisión)</option>
-              <option value="reposicion">📦 Reposición desde Almacén</option>
-              <option value="inicio_turno">☀️ Inicio de Turno</option>
-              <option value="fin_turno">🌙 Fin de Turno</option>
+            >   
+              <option value="inicio_turno">🔓 Inicio de Turno</option>
+              <option value="fin_turno">🔒 Fin de Turno</option>
             </select>
           </div>
 
@@ -392,7 +390,7 @@ export default function App() {
             onClick={guardarRegistro}
             className="w-full bg-gradient-to-r from-rose-600 to-pink-600 text-white py-3.5 rounded-xl font-bold shadow-md shadow-rose-500/20 active:scale-95 transition"
           >
-            Guardar Conteo
+            Registar Conteo
           </button>
 
           <button
