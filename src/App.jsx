@@ -209,6 +209,13 @@ const guardarRegistro = async () => {
               >+</button>
             </div>
           </div>
+
+          <button
+            onClick={guardarRegistro}
+            className="w-full bg-gradient-to-r from-rose-600 to-pink-600 text-white py-3.5 rounded-xl font-bold shadow-md shadow-rose-500/20 active:scale-95 transition"
+          >
+            Guardar Conteo
+          </button>
           <button
             onClick={guardarRegistro}
             className="w-full bg-gradient-to-r from-rose-600 to-pink-600 text-white py-3.5 rounded-xl font-bold shadow-md shadow-rose-500/20 active:scale-95 transition"
@@ -216,7 +223,7 @@ const guardarRegistro = async () => {
             Guardar Conteo
           </button>
 
-          {}
+          {/* Botón para cerrar manualmente la tarjeta */}
           <button
             onClick={() => {
               setProducto(null);
