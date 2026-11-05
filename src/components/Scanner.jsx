@@ -1,17 +1,17 @@
-import { Html5QrcodeScanner, Html5QrcodeScanType, Html5QrcodeSupportedFormats } from 'html5-qrcode';
+import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
 import { useEffect, useRef } from 'react';
 
 export function Scanner({ onScanSuccess }) {
-  const scannerInstanceRef = useRef(null);
+  const html5QrcodeRef = useRef(null);
 
   useEffect(() => {
-    // Si ya existe una instancia activa, evitar crear otra
-    if (scannerInstanceRef.current) return;
+    const elementId = "reader";
+    const html5Qrcode = new Html5Qrcode(elementId);
+    html5QrcodeRef.current = html5Qrcode;
 
     const config = {
       fps: 10,
       qrbox: { width: 260, height: 150 },
-      supportedScanTypes: [Html5QrcodeScanType.SCAN_TYPE_CAMERA],
       formatsToSupport: [
         Html5QrcodeSupportedFormats.EAN_13,
         Html5QrcodeSupportedFormats.EAN_8,
@@ -24,30 +24,32 @@ export function Scanner({ onScanSuccess }) {
       }
     };
 
-    const scanner = new Html5QrcodeScanner('reader', config, false);
-    scannerInstanceRef.current = scanner;
-
-    scanner.render(
+    // Inicia directamente la cámara trasera ({ facingMode: "environment" })
+    html5Qrcode.start(
+      { facingMode: "environment" },
+      config,
       (decodedText) => {
-        if (scannerInstanceRef.current) {
-          scannerInstanceRef.current.clear().catch(console.error);
-          scannerInstanceRef.current = null;
+        if (html5QrcodeRef.current && html5QrcodeRef.current.isScanning) {
+          html5QrcodeRef.current.stop().then(() => {
+            html5QrcodeRef.current = null;
+            onScanSuccess(decodedText);
+          }).catch(console.error);
         }
-        onScanSuccess(decodedText);
       },
-      (error) => console.warn(error)
-    );
+      () => {} // Ignorar errores de encuadre en tiempo real
+    ).catch((err) => {
+      console.error("Error al iniciar cámara:", err);
+    });
 
     return () => {
-      if (scannerInstanceRef.current) {
-        scannerInstanceRef.current.clear().catch(console.error);
-        scannerInstanceRef.current = null;
+      if (html5QrcodeRef.current && html5QrcodeRef.current.isScanning) {
+        html5QrcodeRef.current.stop().catch(console.error);
       }
     };
   }, [onScanSuccess]);
 
   return (
-    <div className="w-full max-w-sm mx-auto bg-white p-4 rounded-xl shadow">
+    <div className="w-full max-w-sm mx-auto overflow-hidden rounded-xl">
       <div id="reader" className="w-full"></div>
     </div>
   );
