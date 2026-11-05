@@ -203,7 +203,7 @@ export default function App() {
           <div className="w-16 h-16 bg-rose-100 text-rose-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
             <User size={32} />
           </div>
-          <h2 className="text-xl font-extrabold text-slate-900 mb-1">¡Bienvenida!</h2>
+          <h2 className="text-xl font-extrabold text-slate-900 mb-1">¡Bienvenid@!</h2>
           <p className="text-xs text-slate-500 mb-5">Ingresa tu nombre para identificar tus conteos de inventario</p>
           
           <form onSubmit={guardarNombreUsuario} className="space-y-3">
