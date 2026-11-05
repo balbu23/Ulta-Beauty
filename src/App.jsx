@@ -57,22 +57,33 @@ export default function App() {
   }
 };
 
-  const guardarRegistro = async () => {
+const guardarRegistro = async () => {
     if (!producto) return;
 
-    const { error } = await supabase
-      .from('registros_conteo')
-      .insert([{
-        producto_id: producto.id,
-        cantidad_piso: cantidad,
-        tipo_registro: tipoRegistro
-      }]);
+    try {
+      const { error } = await supabase
+        .from('registros_conteo')
+        .insert([{
+          producto_id: producto.id,
+          cantidad_piso: cantidad,
+          tipo_registro: tipoRegistro
+        }]);
 
-    if (!error) {
+      if (error) {
+        alert("Error al guardar conteo: " + error.message);
+        return;
+      }
+
       setMensaje('¡Conteo guardado con éxito!');
       setProducto(null);
       setCantidad(1);
+      setTipoRegistro('corte_horario');
       setTimeout(() => setMensaje(''), 3000);
+
+    } catch (err) {
+      console.error(err);
+
+      setProducto(null);
     }
   };
 
@@ -198,12 +209,22 @@ export default function App() {
               >+</button>
             </div>
           </div>
-
           <button
             onClick={guardarRegistro}
             className="w-full bg-gradient-to-r from-rose-600 to-pink-600 text-white py-3.5 rounded-xl font-bold shadow-md shadow-rose-500/20 active:scale-95 transition"
           >
             Guardar Conteo
+          </button>
+
+          {}
+          <button
+            onClick={() => {
+              setProducto(null);
+              setCantidad(1);
+            }}
+            className="w-full bg-slate-100 text-slate-600 py-2.5 rounded-xl font-semibold text-xs border border-slate-200 hover:bg-slate-200 transition mt-2"
+          >
+            Cerrar sin guardar
           </button>
         </div>
       )}
