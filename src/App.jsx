@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { supabase } from './supabaseClient';
 import { Scanner } from './components/Scanner';
 import * as XLSX from 'xlsx';
-import { Scan, Plus, FileSpreadsheet, Sparkles, CheckCircle2, PackageCheck, ShoppingBag, ChevronDown, ChevronUp } from 'lucide-react';
+import { Scan, Plus, FileSpreadsheet, Sparkles, CheckCircle2, PackageCheck, ShoppingBag, ChevronDown, ChevronUp, User, UserCheck } from 'lucide-react';
 
 export default function App() {
   const [scanning, setScanning] = useState(false);
@@ -11,6 +11,11 @@ export default function App() {
   const [tipoRegistro, setTipoRegistro] = useState('corte_horario');
   const [mensaje, setMensaje] = useState('');
   const [totalHoy, setTotalHoy] = useState(0);
+
+  // Nombre del usuario/colaboradora (guardado en el navegador)
+  const [nombreUsuario, setNombreUsuario] = useState(() => localStorage.getItem('ulta_usuario') || '');
+  const [inputNombre, setInputNombre] = useState('');
+  const [editandoUsuario, setEditandoUsuario] = useState(false);
 
   // Estado para desplegar el resumen por productos
   const [mostrarDetalleHoy, setMostrarDetalleHoy] = useState(false);
@@ -21,22 +26,23 @@ export default function App() {
   const [codigoEscaneado, setCodigoEscaneado] = useState('');
   const [esNuevo, setEsNuevo] = useState(false);
 
-  // Cargar el total acumulado y desglose por producto del día
+  // Cargar el total acumulado y desglose por producto DEL USUARIO ACTUAL
   const cargarTotalHoy = async () => {
+    if (!nombreUsuario) return;
+
     const inicioHoy = new Date();
     inicioHoy.setHours(0, 0, 0, 0);
 
     const { data, error } = await supabase
       .from('registros_conteo')
       .select('cantidad_piso, productos(nombre, codigo_barras)')
-      .gte('created_at', inicioHoy.toISOString());
+      .gte('created_at', inicioHoy.toISOString())
+      .eq('usuario', nombreUsuario);
 
     if (!error && data) {
-      // Suma total de unidades
       const suma = data.reduce((acc, curr) => acc + (curr.cantidad_piso || 0), 0);
       setTotalHoy(suma);
 
-      // Agrupar totales por cada producto escaneado hoy
       const acumulado = {};
       data.forEach(item => {
         const nombre = item.productos?.nombre || 'Producto sin nombre';
@@ -55,7 +61,16 @@ export default function App() {
 
   useEffect(() => {
     cargarTotalHoy();
-  }, []);
+  }, [nombreUsuario]);
+
+  const guardarNombreUsuario = (e) => {
+    e.preventDefault();
+    if (!inputNombre.trim()) return;
+    const nombreLimpio = inputNombre.trim();
+    localStorage.setItem('ulta_usuario', nombreLimpio);
+    setNombreUsuario(nombreLimpio);
+    setEditandoUsuario(false);
+  };
 
   const handleScan = async (code) => {
     setScanning(false);
@@ -99,7 +114,7 @@ export default function App() {
   };
 
   const guardarRegistro = async () => {
-    if (!producto) return;
+    if (!producto || !nombreUsuario) return;
 
     try {
       const { error } = await supabase
@@ -107,7 +122,8 @@ export default function App() {
         .insert([{
           producto_id: producto.id,
           cantidad_piso: cantidad,
-          tipo_registro: tipoRegistro
+          tipo_registro: tipoRegistro,
+          usuario: nombreUsuario
         }]);
 
       if (error) {
@@ -120,9 +136,7 @@ export default function App() {
       setCantidad(1);
       setTipoRegistro('corte_horario');
 
-      // Actualizar total y desglose inmediatamente
       cargarTotalHoy();
-
       setTimeout(() => setMensaje(''), 3000);
 
     } catch (err) {
@@ -132,6 +146,8 @@ export default function App() {
   };
 
   const exportarExcelHoy = async () => {
+    if (!nombreUsuario) return;
+
     const inicioHoy = new Date();
     inicioHoy.setHours(0, 0, 0, 0);
 
@@ -139,15 +155,16 @@ export default function App() {
       .from('registros_conteo')
       .select('id, created_at, cantidad_piso, tipo_registro, productos(nombre, codigo_barras)')
       .gte('created_at', inicioHoy.toISOString())
+      .eq('usuario', nombreUsuario)
       .order('created_at', { ascending: true });
 
     if (error || !data || data.length === 0) {
-      alert("No hay conteos registrados en la bolsa para exportar.");
+      alert(`No hay conteos registrados en la bolsa de ${nombreUsuario}.`);
       return;
     }
 
-    // 1. Crear y descargar el archivo Excel
     const datosFormateados = data.map(row => ({
+      'Usuario': nombreUsuario,
       'Hora': new Date(row.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       'Código': row.productos?.codigo_barras || '',
       'Producto': row.productos?.nombre || '',
@@ -158,10 +175,10 @@ export default function App() {
     const fechaHoy = new Date().toISOString().slice(0, 10);
     const worksheet = XLSX.utils.json_to_sheet(datosFormateados);
     const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Conteos Hoy");
-    XLSX.writeFile(workbook, `Reporte_Inventario_${fechaHoy}.xlsx`);
+    XLSX.utils.book_append_sheet(workbook, worksheet, `Conteos_${nombreUsuario}`);
+    XLSX.writeFile(workbook, `Reporte_${nombreUsuario}_${fechaHoy}.xlsx`);
 
-    // 2. Vaciar los registros procesados de la bolsa
+    // Vaciar SOLAMENTE los registros de esta usuaria
     const idsAEliminar = data.map(item => item.id);
     const { error: deleteError } = await supabase
       .from('registros_conteo')
@@ -171,22 +188,64 @@ export default function App() {
     if (deleteError) {
       console.error("Error al vaciar la bolsa:", deleteError);
     } else {
-      setMensaje('¡Excel exportado y bolsa vaciada a 0 unidades!');
+      setMensaje(`¡Excel de ${nombreUsuario} exportado y bolsa vaciada a 0!`);
       setMostrarDetalleHoy(false);
-      cargarTotalHoy(); // Reinicia el contador a 0 en pantalla
+      cargarTotalHoy();
       setTimeout(() => setMensaje(''), 4000);
     }
   };
 
+  // PANTALLA INICIAL: Registro de nombre de la usuaria
+  if (!nombreUsuario || editandoUsuario) {
+    return (
+      <div className="min-h-screen bg-gradient-to-b from-rose-50 via-pink-50 to-slate-100 p-6 max-w-md mx-auto text-slate-800 flex items-center justify-center font-sans">
+        <div className="bg-white p-6 rounded-3xl shadow-xl border border-rose-100 w-full text-center">
+          <div className="w-16 h-16 bg-rose-100 text-rose-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
+            <User size={32} />
+          </div>
+          <h2 className="text-xl font-extrabold text-slate-900 mb-1">¡Bienvenida!</h2>
+          <p className="text-xs text-slate-500 mb-5">Ingresa tu nombre para identificar tus conteos de inventario</p>
+          
+          <form onSubmit={guardarNombreUsuario} className="space-y-3">
+            <input
+              type="text"
+              placeholder="Ej. Laura / Fernanda"
+              value={inputNombre}
+              onChange={(e) => setInputNombre(e.target.value)}
+              className="w-full p-3.5 border border-slate-200 rounded-xl text-center text-base font-bold focus:outline-none focus:border-rose-500 focus:ring-2 focus:ring-rose-100"
+              autoFocus
+            />
+            <button
+              type="submit"
+              className="w-full bg-gradient-to-r from-rose-500 to-pink-600 text-white py-3.5 rounded-xl font-bold shadow-md shadow-rose-500/20 active:scale-95 transition flex items-center justify-center gap-2"
+            >
+              <UserCheck size={18} /> Comenzar Turno
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-b from-rose-50 via-pink-50/50 to-slate-100 p-4 max-w-md mx-auto text-slate-800 font-sans pb-10">
       {/* Encabezado Estilo Beauty */}
-      <header className="mb-4 text-center pt-2">
+      <header className="mb-3 text-center pt-2">
         <div className="inline-flex items-center gap-1.5 px-3.5 py-1 bg-rose-100/80 text-rose-700 rounded-full text-xs font-bold tracking-wide uppercase mb-2 border border-rose-200">
           <Sparkles size={14} /> Belleza Ulta
         </div>
         <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">Control de Productos</h1>
-        <p className="text-xs text-rose-500 font-semibold mt-0.5">Monitoreo y Conteo en Piso de Venta</p>
+        
+        {/* Identificador de Usuaria Activa */}
+        <div className="mt-1 flex items-center justify-center gap-2">
+          <span className="text-xs text-slate-500 font-medium">Turno de: <strong className="text-rose-600 font-bold">{nombreUsuario}</strong></span>
+          <button 
+            onClick={() => { setInputNombre(nombreUsuario); setEditandoUsuario(true); }}
+            className="text-[10px] bg-slate-200/80 hover:bg-slate-300 text-slate-700 px-2 py-0.5 rounded-md font-semibold transition"
+          >
+            Cambiar
+          </button>
+        </div>
       </header>
 
       {/* Tarjeta Resumen del Día Interactiva */}
@@ -197,11 +256,11 @@ export default function App() {
         >
           <div>
             <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1">
-              Total Escaneado Hoy {mostrarDetalleHoy ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+              Mi Total Hoy {mostrarDetalleHoy ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
             </p>
             <div className="flex items-baseline gap-1.5 mt-0.5">
               <span className="text-3xl font-black text-rose-600">{totalHoy}</span>
-              <span className="text-xs font-bold text-slate-600">unidades registradas</span>
+              <span className="text-xs font-bold text-slate-600">unidades en mi bolsa</span>
             </div>
           </div>
           <div className="w-12 h-12 bg-rose-100 text-rose-600 rounded-xl flex items-center justify-center font-bold shrink-0 shadow-sm active:scale-95 transition">
@@ -209,14 +268,14 @@ export default function App() {
           </div>
         </div>
 
-        {/* Lista Desplegable de Productos Escaneados Hoy */}
+        {/* Lista Desplegable de Productos Escaneados por esta persona */}
         {mostrarDetalleHoy && (
           <div className="mt-4 pt-3 border-t border-rose-100 space-y-2">
             <h3 className="text-xs font-extrabold text-slate-700 uppercase tracking-wider mb-2">
-              Desglose por Producto ({listaHoy.length})
+              Mis Productos Escaneados ({listaHoy.length})
             </h3>
             {listaHoy.length === 0 ? (
-              <p className="text-xs text-slate-400 italic">No se han registrado productos hoy.</p>
+              <p className="text-xs text-slate-400 italic">No has registrado productos en tu bolsa hoy.</p>
             ) : (
               <div className="max-h-52 overflow-y-auto space-y-2 pr-1">
                 {listaHoy.map((item, index) => (
@@ -354,7 +413,7 @@ export default function App() {
           onClick={exportarExcelHoy}
           className="w-full bg-slate-900 hover:bg-slate-800 text-white py-3.5 px-4 rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow transition"
         >
-          <FileSpreadsheet size={18} className="text-emerald-400" /> Exportar Informe del Día a Excel
+          <FileSpreadsheet size={18} className="text-emerald-400" /> Exportar Mi Informe a Excel
         </button>
       </div>
     </div>
