@@ -36,19 +36,26 @@ export default function App() {
   };
 
   const crearProducto = async () => {
-    if (!nuevoNombre) return;
-    const { data, error } = await supabase
-      .from('productos')
-      .insert([{ codigo_barras: codigoEscaneado, nombre: nuevoNombre }])
-      .select()
-      .single();
+  if (!nuevoNombre) return;
 
-    if (!error && data) {
-      setProducto(data);
-      setEsNuevo(false);
-      setNuevoNombre('');
-    }
-  };
+  const { data, error } = await supabase
+    .from('productos')
+    .insert([{ codigo_barras: codigoEscaneado, nombre: nuevoNombre }])
+    .select()
+    .single();
+
+  if (error) {
+    alert("Error al guardar en Supabase: " + error.message);
+    console.error(error);
+    return;
+  }
+
+  if (data) {
+    setProducto(data);
+    setEsNuevo(false);
+    setNuevoNombre('');
+  }
+};
 
   const guardarRegistro = async () => {
     if (!producto) return;
