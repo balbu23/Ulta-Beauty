@@ -60,7 +60,7 @@ export default function App() {
     return () => document.removeEventListener('visibilitychange', handleVisibility);
   }, [scanning]);
 
-  // 3. Mantener el token JWT de Supabase refrescado automáticamente
+  // 3. Mantener la sesión de Supabase renovada
   useEffect(() => {
     const { data: authListener } = supabase.auth.onAuthStateChange((event) => {
       if (event === 'TOKEN_REFRESHED') {
@@ -78,7 +78,7 @@ export default function App() {
 
     const { data, error } = await supabase
       .from('registros_conteo')
-      .select('cantidad_piso, productos(nombre, codigo_barras)')
+      .select('cantidad_piso, codigo_barras, productos(nombre, codigo_barras)')
       .gte('created_at', inicioHoy.toISOString())
       .eq('usuario', nombreUsuario);
 
@@ -89,7 +89,7 @@ export default function App() {
       const acumulado = {};
       data.forEach(item => {
         const nombre = item.productos?.nombre || 'Producto sin nombre';
-        const codigo = item.productos?.codigo_barras || '';
+        const codigo = item.productos?.codigo_barras || item.codigo_barras || '';
         const key = `${nombre}_${codigo}`;
 
         if (!acumulado[key]) {
@@ -117,13 +117,14 @@ export default function App() {
 
   const handleScan = async (code) => {
     setScanning(false);
-    setCodigoEscaneado(code);
+    const codigoLimpio = String(code).trim();
+    setCodigoEscaneado(codigoLimpio);
 
     const { data } = await supabase
       .from('productos')
       .select('*')
-      .eq('codigo_barras', code)
-      .single();
+      .eq('codigo_barras', codigoLimpio)
+      .maybeSingle();
 
     if (data) {
       setProducto(data);
@@ -135,12 +136,14 @@ export default function App() {
   };
 
   const crearProducto = async () => {
-    if (!nuevoNombre) return;
+    if (!nuevoNombre.trim() || !codigoEscaneado) return;
+
+    const codigoLimpio = String(codigoEscaneado).trim();
 
     const { data, error } = await supabase
       .from('productos')
       .upsert(
-        { codigo_barras: codigoEscaneado, nombre: nuevoNombre },
+        { codigo_barras: codigoLimpio, nombre: nuevoNombre.trim() },
         { onConflict: 'codigo_barras' }
       )
       .select()
@@ -160,11 +163,10 @@ export default function App() {
   };
 
   const guardarRegistro = async (codigoParam, datosProductoParam) => {
-    if (procesando) return; // Freno contra lecturas dobles muy rápidas
+    if (procesando) return;
     setProcesando(true);
 
-    // Determina el código y nombre del producto de forma segura
-    const codigo = typeof codigoParam === 'string' ? codigoParam : (producto?.codigo_barras || codigoEscaneado);
+    const codigo = String(codigoParam || producto?.codigo_barras || codigoEscaneado).trim();
     const nombreProd = datosProductoParam?.nombre || producto?.nombre || nuevoNombre || 'Producto Escaneado';
 
     if (!codigo) {
@@ -173,37 +175,47 @@ export default function App() {
       return;
     }
 
-    const nuevoRegistro = {
-      codigo_barras: codigo,
-      usuario: nombreUsuario,
-      tipo_registro: tipoRegistro,
-      cantidad_piso: cantidad
-    };
-
-    // --- Si el celular NO tiene internet ---
-    if (!navigator.onLine) {
-      const cola = JSON.parse(localStorage.getItem('cola_escaneos') || '[]');
-      cola.push(nuevoRegistro);
-      localStorage.setItem('cola_escaneos', JSON.stringify(cola));
-      setMensaje('Sin conexión: producto guardado localmente.');
-      setProducto(null);
-      setCantidad(1);
-      setProcesando(false);
-      setTimeout(() => setMensaje(''), 4000);
-      return;
-    }
-
-    // --- Si TIENE internet: usa upsert en catálogo e inserta conteo ---
     try {
-      // 1. Guardar o actualizar en catálogo general sin duplicar errores
-      await supabase
-        .from('productos')
-        .upsert(
-          { codigo_barras: codigo, nombre: nombreProd },
-          { onConflict: 'codigo_barras' }
-        );
+      let prodData = producto;
 
-      // 2. Registrar la unidad escaneada
+      // 1. Guardar/asegurar el producto en el catálogo y obtener su ID de Supabase
+      if (!prodData || !prodData.id) {
+        const { data: upsertedProd, error: prodErr } = await supabase
+          .from('productos')
+          .upsert(
+            { codigo_barras: codigo, nombre: nombreProd },
+            { onConflict: 'codigo_barras' }
+          )
+          .select()
+          .single();
+
+        if (prodErr) throw prodErr;
+        prodData = upsertedProd;
+      }
+
+      // 2. Vincular producto_id y codigo_barras en el conteo
+      const nuevoRegistro = {
+        producto_id: prodData?.id || null,
+        codigo_barras: codigo,
+        usuario: nombreUsuario,
+        tipo_registro: tipoRegistro,
+        cantidad_piso: cantidad
+      };
+
+      // --- Si el celular NO tiene internet ---
+      if (!navigator.onLine) {
+        const cola = JSON.parse(localStorage.getItem('cola_escaneos') || '[]');
+        cola.push(nuevoRegistro);
+        localStorage.setItem('cola_escaneos', JSON.stringify(cola));
+        setMensaje('Sin conexión: producto guardado localmente.');
+        setProducto(null);
+        setCantidad(1);
+        setProcesando(false);
+        setTimeout(() => setMensaje(''), 4000);
+        return;
+      }
+
+      // 3. Registrar el conteo
       const { error } = await supabase.from('registros_conteo').insert([nuevoRegistro]);
 
       if (error) throw error;
@@ -215,13 +227,8 @@ export default function App() {
       setTimeout(() => setMensaje(''), 4000);
     } catch (err) {
       console.error('Error al guardar:', err.message);
-      setMensaje('Error de red. Guardado en memoria local.');
-      const cola = JSON.parse(localStorage.getItem('cola_escaneos') || '[]');
-      cola.push(nuevoRegistro);
-      localStorage.setItem('cola_escaneos', JSON.stringify(cola));
-      setProducto(null);
-      setCantidad(1);
-      setTimeout(() => setMensaje(''), 4000);
+      setMensaje(`Error al guardar: ${err.message}`);
+      setTimeout(() => setMensaje(''), 5000);
     } finally {
       setTimeout(() => setProcesando(false), 1200);
     }
@@ -235,7 +242,7 @@ export default function App() {
 
     const { data, error } = await supabase
       .from('registros_conteo')
-      .select('id, created_at, cantidad_piso, tipo_registro, productos(nombre, codigo_barras)')
+      .select('id, created_at, cantidad_piso, tipo_registro, codigo_barras, productos(nombre, codigo_barras)')
       .gte('created_at', inicioHoy.toISOString())
       .eq('usuario', nombreUsuario)
       .order('created_at', { ascending: true });
@@ -248,8 +255,8 @@ export default function App() {
     const datosFormateados = data.map(row => ({
       'Usuario': nombreUsuario,
       'Hora': new Date(row.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      'Código': row.productos?.codigo_barras || '',
-      'Producto': row.productos?.nombre || '',
+      'Código': row.productos?.codigo_barras || row.codigo_barras || '',
+      'Producto': row.productos?.nombre || 'Producto sin nombre',
       'Cantidad en Piso': row.cantidad_piso,
       'Evento': row.tipo_registro
     }));
@@ -260,7 +267,7 @@ export default function App() {
     XLSX.utils.book_append_sheet(workbook, worksheet, `Conteos_${nombreUsuario}`);
     XLSX.writeFile(workbook, `Reporte_${nombreUsuario}_${fechaHoy}.xlsx`);
 
-    // Vaciar SOLAMENTE los registros de esta usuaria
+    // Vaciar los registros exportados
     const idsAEliminar = data.map(item => item.id);
     const { error: deleteError } = await supabase
       .from('registros_conteo')
@@ -277,7 +284,6 @@ export default function App() {
     }
   };
 
-  // PANTALLA INICIAL: Registro de nombre de la usuaria
   if (!nombreUsuario || editandoUsuario) {
     return (
       <div className="min-h-screen bg-gradient-to-b from-rose-50 via-pink-50 to-slate-100 p-6 max-w-md mx-auto text-slate-800 flex items-center justify-center font-sans">
@@ -311,14 +317,12 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-rose-50 via-pink-50/50 to-slate-100 p-4 max-w-md mx-auto text-slate-800 font-sans pb-10">
-      {/* Encabezado Estilo Beauty */}
       <header className="mb-3 text-center pt-2">
         <div className="inline-flex items-center gap-1.5 px-3.5 py-1 bg-rose-100/80 text-rose-700 rounded-full text-xs font-bold tracking-wide uppercase mb-2 border border-rose-200">
           <Sparkles size={14} /> Belleza Ulta
         </div>
         <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">Control de Productos</h1>
         
-        {/* Identificador de Usuaria Activa */}
         <div className="mt-1 flex items-center justify-center gap-2">
           <span className="text-xs text-slate-500 font-medium">¡HOLA! <strong className="text-rose-600 font-bold">{nombreUsuario}</strong></span>
           <button 
@@ -330,7 +334,6 @@ export default function App() {
         </div>
       </header>
 
-      {/* Tarjeta Resumen del Día Interactiva */}
       <div className="bg-white/90 backdrop-blur border border-rose-100 rounded-2xl p-4 mb-4 shadow-sm">
         <div 
           onClick={() => setMostrarDetalleHoy(!mostrarDetalleHoy)}
@@ -350,7 +353,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* Lista Desplegable de Productos Escaneados por esta persona */}
         {mostrarDetalleHoy && (
           <div className="mt-4 pt-3 border-t border-rose-100 space-y-2">
             <h3 className="text-xs font-extrabold text-slate-700 uppercase tracking-wider mb-2">
@@ -377,7 +379,6 @@ export default function App() {
         )}
       </div>
 
-      {/* Alerta de confirmación */}
       {mensaje && (
         <div className="mb-4 p-3.5 bg-emerald-50 border border-emerald-300 text-emerald-800 rounded-2xl flex items-center gap-2 text-sm shadow-sm">
           <CheckCircle2 className="text-emerald-500 shrink-0" size={20} />
@@ -385,7 +386,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Botón Principal de Escaneo */}
       {!scanning && !producto && !esNuevo && (
         <button
           onClick={() => setScanning(true)}
@@ -395,7 +395,6 @@ export default function App() {
         </button>
       )}
 
-      {/* Visor de Escáner */}
       {scanning && (
         <div className="mb-6 bg-white p-3 rounded-2xl shadow-xl border border-rose-100">
           <Scanner onScanSuccess={handleScan} />
@@ -408,7 +407,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Registrar Nuevo Producto */}
       {esNuevo && (
         <div className="mt-4 bg-white p-5 rounded-2xl shadow-lg border border-amber-200">
           <div className="flex items-center gap-2 mb-2 text-amber-700">
@@ -432,7 +430,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Producto Encontrado */}
       {producto && (
         <div className="mt-4 bg-white p-5 rounded-2xl shadow-xl border border-rose-100 space-y-4">
           <div className="border-b border-slate-100 pb-3">
@@ -490,8 +487,7 @@ export default function App() {
           </button>
         </div>
       )}
-
-      {/* Sección de Exportar */}
+      
       <div className="mt-6 pt-4 border-t border-rose-100">
         <button
           onClick={exportarExcelHoy}
