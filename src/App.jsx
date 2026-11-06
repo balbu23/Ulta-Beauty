@@ -385,12 +385,8 @@ export default function App() {
                       <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Desglose por turno:</p>
                       <div className="grid grid-cols-3 gap-1.5 text-[10px]">
                         <div className="bg-white/90 p-1.5 rounded-lg text-center border border-slate-100 shadow-2xs">
-                          <span className="block text-slate-400 font-medium">☀️ Mañana</span>
+                          <span className="block text-slate-400 font-medium">🔓 Mañana</span>
                           <span className="font-extrabold text-slate-800">{item.desglose.inicio_turno} pcs</span>
-                        </div>
-                        <div className="bg-white/90 p-1.5 rounded-lg text-center border border-slate-100 shadow-2xs">
-                          <span className="block text-slate-400 font-medium">⏱️ Corte</span>
-                          <span className="font-extrabold text-slate-800">{item.desglose.corte_horario} pcs</span>
                         </div>
                         <div className="bg-white/90 p-1.5 rounded-lg text-center border border-slate-100 shadow-2xs">
                           <span className="block text-slate-400 font-medium">🔒 Cierre</span>
@@ -489,8 +485,7 @@ export default function App() {
               onChange={(e) => setTipoRegistro(e.target.value)}
               className="w-full p-3 border border-slate-200 rounded-xl bg-slate-50 text-sm font-medium focus:outline-none focus:border-rose-400"
             >   
-              <option value="inicio_turno">☀️ Inicio de Turno (Mañana)</option>
-              <option value="corte_horario">⏱️ Corte Horario</option>
+              <option value="inicio_turno">🔓 Inicio de Turno (Mañana)</option>
               <option value="fin_turno">🔒 Fin de Turno (Cierre)</option>
             </select>
           </div>

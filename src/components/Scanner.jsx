@@ -14,18 +14,26 @@ export function Scanner({ onScanSuccess }) {
         scannerRef.current = html5Qrcode;
 
         const config = {
-          fps: 10,
-          qrbox: { width: 250, height: 150 },
+          fps: 15, // Mayor tasa de refresco para agilizar la lectura
+          qrbox: { width: 260, height: 160 },
+          aspectRatio: 1.0,
           formatsToSupport: [
             Html5QrcodeSupportedFormats.EAN_13,
             Html5QrcodeSupportedFormats.EAN_8,
             Html5QrcodeSupportedFormats.CODE_128,
             Html5QrcodeSupportedFormats.UPC_A,
             Html5QrcodeSupportedFormats.UPC_E,
-          ]
+          ],
+          // Restricciones de video optimizadas para forzar enfoque continuo y resolución 720p en iOS/Safari
+          videoConstraints: {
+            facingMode: { ideal: "environment" },
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+            focusMode: { ideal: "continuous" }
+          }
         };
 
-        // Intentar encendido directo con cámara trasera
+        // 1. Intentar encendido directo con cámara trasera y foco continuo
         await html5Qrcode.start(
           { facingMode: "environment" },
           config,
@@ -40,15 +48,36 @@ export function Scanner({ onScanSuccess }) {
           () => {}
         );
       } catch (err) {
-        console.warn("Reintentando con selector de dispositivos...", err);
+        console.warn("Reintentando con selección manual de lente...", err);
         try {
           const devices = await Html5Qrcode.getCameras();
           if (devices && devices.length > 0) {
-            // Seleccionar la cámara principal trasera del dispositivo
-            const backCamera = devices[devices.length - 1];
+            // Filtrar para seleccionar la cámara trasera principal de iPhone (descartando lentes Ultra Wide o Telephoto que distorsionan el foco macro)
+            const mainBackCamera = devices.find(d => 
+              /back|rear|trasera/i.test(d.label) && !/ultra|wide|tele/i.test(d.label)
+            ) || devices.find(d => /back|rear|trasera/i.test(d.label)) || devices[devices.length - 1];
+
+            const configFallback = {
+              fps: 15,
+              qrbox: { width: 260, height: 160 },
+              aspectRatio: 1.0,
+              formatsToSupport: [
+                Html5QrcodeSupportedFormats.EAN_13,
+                Html5QrcodeSupportedFormats.EAN_8,
+                Html5QrcodeSupportedFormats.CODE_128,
+                Html5QrcodeSupportedFormats.UPC_A,
+                Html5QrcodeSupportedFormats.UPC_E,
+              ],
+              videoConstraints: {
+                width: { ideal: 1280 },
+                height: { ideal: 720 },
+                focusMode: { ideal: "continuous" }
+              }
+            };
+
             await html5Qrcode.start(
-              backCamera.id,
-              { fps: 10, qrbox: { width: 250, height: 150 } },
+              mainBackCamera.id,
+              configFallback,
               (decodedText) => {
                 if (scannerRef.current && scannerRef.current.isScanning) {
                   scannerRef.current.stop().then(() => {
@@ -67,7 +96,6 @@ export function Scanner({ onScanSuccess }) {
       }
     };
 
-    // Pequeño retardo para asegurar que el elemento esté montado en pantalla
     const timer = setTimeout(() => {
       startScanner();
     }, 150);
