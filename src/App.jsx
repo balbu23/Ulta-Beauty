@@ -389,6 +389,10 @@ export default function App() {
                           <span className="font-extrabold text-slate-800">{item.desglose.inicio_turno} pcs</span>
                         </div>
                         <div className="bg-white/90 p-1.5 rounded-lg text-center border border-slate-100 shadow-2xs">
+                          <span className="block text-slate-400 font-medium">⏱️ Corte</span>
+                          <span className="font-extrabold text-slate-800">{item.desglose.corte_horario} pcs</span>
+                        </div>
+                        <div className="bg-white/90 p-1.5 rounded-lg text-center border border-slate-100 shadow-2xs">
                           <span className="block text-slate-400 font-medium">🔒 Cierre</span>
                           <span className="font-extrabold text-slate-800">{item.desglose.fin_turno} pcs</span>
                         </div>
@@ -486,6 +490,7 @@ export default function App() {
               className="w-full p-3 border border-slate-200 rounded-xl bg-slate-50 text-sm font-medium focus:outline-none focus:border-rose-400"
             >   
               <option value="inicio_turno">🔓 Inicio de Turno (Mañana)</option>
+              <option value="corte_horario">⏱️ Corte Horario</option>
               <option value="fin_turno">🔒 Fin de Turno (Cierre)</option>
             </select>
           </div>
