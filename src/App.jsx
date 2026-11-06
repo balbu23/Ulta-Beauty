@@ -2,7 +2,10 @@ import { useState, useEffect } from 'react';
 import { supabase } from './supabaseClient';
 import { Scanner } from './components/Scanner';
 import * as XLSX from 'xlsx';
-import { Scan, Plus, FileSpreadsheet, Sparkles, CheckCircle2, PackageCheck, ShoppingBag, ChevronDown, ChevronUp, User, UserCheck, X } from 'lucide-react';
+import { 
+  Scan, Plus, FileSpreadsheet, Sparkles, CheckCircle2, PackageCheck, 
+  ShoppingBag, ChevronDown, ChevronUp, User, UserCheck, X, Pencil, Trash2, Check 
+} from 'lucide-react';
 
 export default function App() {
   const [scanning, setScanning] = useState(false);
@@ -20,6 +23,11 @@ export default function App() {
   // Estado para desplegar la bolsa
   const [mostrarDetalleHoy, setMostrarDetalleHoy] = useState(false);
   const [listaHoy, setListaHoy] = useState([]);
+  const [registrosHoy, setRegistrosHoy] = useState([]);
+
+  // Estados para edición de un registro existente
+  const [registroEditandoId, setRegistroEditandoId] = useState(null);
+  const [cantEditada, setCantEditada] = useState(1);
 
   // Formulario para producto nuevo
   const [nuevoNombre, setNuevoNombre] = useState('');
@@ -60,7 +68,7 @@ export default function App() {
     return () => document.removeEventListener('visibilitychange', handleVisibility);
   }, [scanning]);
 
-  // Cargar totales y desglose por producto
+  // Cargar totales, desglose y lista de registros editables
   const cargarTotalHoy = async () => {
     if (!nombreUsuario) return;
 
@@ -69,13 +77,15 @@ export default function App() {
 
     const { data, error } = await supabase
       .from('registros_conteo')
-      .select('cantidad_piso, tipo_registro, codigo_barras, productos(nombre, codigo_barras)')
+      .select('id, created_at, cantidad_piso, tipo_registro, codigo_barras, productos(nombre, codigo_barras)')
       .gte('created_at', inicioHoy.toISOString())
-      .eq('usuario', nombreUsuario);
+      .eq('usuario', nombreUsuario)
+      .order('created_at', { ascending: false });
 
     if (!error && data) {
       const sumaTotal = data.reduce((acc, curr) => acc + (curr.cantidad_piso || 0), 0);
       setTotalHoy(sumaTotal);
+      setRegistrosHoy(data);
 
       // Agrupar productos con desglose por tipo de registro
       const acumulado = {};
@@ -242,6 +252,51 @@ export default function App() {
     }
   };
 
+  // --- Funciones de Edición Directa de Registros ---
+  const iniciarEdicion = (item) => {
+    setRegistroEditandoId(item.id);
+    setCantEditada(item.cantidad_piso);
+  };
+
+  const guardarEdicionCantidad = async (id) => {
+    if (cantEditada <= 0) {
+      eliminarRegistro(id);
+      return;
+    }
+
+    const { error } = await supabase
+      .from('registros_conteo')
+      .update({ cantidad_piso: cantEditada })
+      .eq('id', id);
+
+    if (error) {
+      alert("Error al actualizar: " + error.message);
+    } else {
+      setRegistroEditandoId(null);
+      setMensaje('¡Cantidad corregida exitosamente!');
+      cargarTotalHoy();
+      setTimeout(() => setMensaje(''), 3000);
+    }
+  };
+
+  const eliminarRegistro = async (id) => {
+    if (!window.confirm("¿Deseas eliminar este registro de tu bolsa?")) return;
+
+    const { error } = await supabase
+      .from('registros_conteo')
+      .delete()
+      .eq('id', id);
+
+    if (error) {
+      alert("Error al eliminar: " + error.message);
+    } else {
+      setRegistroEditandoId(null);
+      setMensaje('Registro eliminado de la bolsa.');
+      cargarTotalHoy();
+      setTimeout(() => setMensaje(''), 3000);
+    }
+  };
+
   const exportarExcelHoy = async () => {
     if (!nombreUsuario) return;
 
@@ -266,7 +321,8 @@ export default function App() {
       'Código': row.productos?.codigo_barras || row.codigo_barras || '',
       'Producto': row.productos?.nombre || 'Producto sin nombre',
       'Cantidad en Piso': row.cantidad_piso,
-      'Evento': row.tipo_registro
+      'Evento': row.tipo_registro === 'inicio_turno' ? 'Inicio de Turno' :
+                row.tipo_registro === 'fin_turno' ? 'Fin de Turno' : 'Corte Horario'
     }));
 
     const fechaHoy = new Date().toISOString().slice(0, 10);
@@ -339,7 +395,7 @@ export default function App() {
         </div>
       </header>
 
-      {/* Sección Bolsa con Desglose */}
+      {/* Sección Bolsa con Desglose y Edición Inline */}
       <div className="bg-white/90 backdrop-blur border border-rose-100 rounded-2xl p-4 mb-4 shadow-sm">
         <div 
           onClick={() => setMostrarDetalleHoy(!mostrarDetalleHoy)}
@@ -362,44 +418,98 @@ export default function App() {
         {mostrarDetalleHoy && (
           <div className="mt-4 pt-3 border-t border-rose-100 space-y-3">
             <h3 className="text-xs font-extrabold text-slate-700 uppercase tracking-wider mb-1">
-              Mis Productos Escaneados ({listaHoy.length})
+              Mis Escaneos Registrados ({registrosHoy.length})
             </h3>
-            {listaHoy.length === 0 ? (
+            {registrosHoy.length === 0 ? (
               <p className="text-xs text-slate-400 italic">No has registrado productos en tu bolsa hoy.</p>
             ) : (
-              <div className="max-h-64 overflow-y-auto space-y-2.5 pr-1">
-                {listaHoy.map((item, index) => (
-                  <div key={index} className="bg-rose-50/70 p-3 rounded-xl border border-rose-100/80 space-y-2">
-                    <div className="flex justify-between items-start">
-                      <div className="max-w-[70%]">
-                        <p className="text-xs font-bold text-slate-800 leading-tight">{item.nombre}</p>
-                        <p className="text-[10px] text-slate-400 font-mono mt-0.5">{item.codigo}</p>
-                      </div>
-                      <span className="px-2.5 py-1 bg-white text-rose-600 font-black text-xs rounded-lg shadow-sm border border-rose-100 shrink-0">
-                        Total: {item.total} pcs
-                      </span>
-                    </div>
+              <div className="max-h-72 overflow-y-auto space-y-2.5 pr-1">
+                {registrosHoy.map((item) => {
+                  const nombre = item.productos?.nombre || 'Producto sin nombre';
+                  const hora = new Date(item.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                  const esEditando = registroEditandoId === item.id;
 
-                    {/* Apartado Desglose */}
-                    <div className="pt-2 border-t border-rose-200/60">
-                      <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Desglose por turno:</p>
-                      <div className="grid grid-cols-3 gap-1.5 text-[10px]">
-                        <div className="bg-white/90 p-1.5 rounded-lg text-center border border-slate-100 shadow-2xs">
-                          <span className="block text-slate-400 font-medium">🔓 Mañana</span>
-                          <span className="font-extrabold text-slate-800">{item.desglose.inicio_turno} pcs</span>
+                  const etiquetaEvento = 
+                    item.tipo_registro === 'inicio_turno' ? '🔓 Inicio' :
+                    item.tipo_registro === 'fin_turno' ? '🔒 Cierre' : '⏱️ Corte';
+
+                  return (
+                    <div key={item.id} className="bg-rose-50/70 p-3 rounded-xl border border-rose-100/80 space-y-2">
+                      <div className="flex justify-between items-start gap-2">
+                        <div className="max-w-[65%]">
+                          <p className="text-xs font-bold text-slate-800 leading-tight">{nombre}</p>
+                          <span className="inline-block text-[10px] bg-white px-2 py-0.5 rounded font-medium text-slate-500 border border-slate-100 mt-1">
+                            {etiquetaEvento} • {hora}
+                          </span>
                         </div>
-                        <div className="bg-white/90 p-1.5 rounded-lg text-center border border-slate-100 shadow-2xs">
-                          <span className="block text-slate-400 font-medium">⏱️ Corte</span>
-                          <span className="font-extrabold text-slate-800">{item.desglose.corte_horario} pcs</span>
-                        </div>
-                        <div className="bg-white/90 p-1.5 rounded-lg text-center border border-slate-100 shadow-2xs">
-                          <span className="block text-slate-400 font-medium">🔒 Cierre</span>
-                          <span className="font-extrabold text-slate-800">{item.desglose.fin_turno} pcs</span>
-                        </div>
+
+                        {!esEditando ? (
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <span className="px-2.5 py-1 bg-white text-rose-600 font-black text-xs rounded-lg shadow-sm border border-rose-100">
+                              {item.cantidad_piso} pcs
+                            </span>
+                            <button
+                              onClick={() => iniciarEdicion(item)}
+                              className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg transition"
+                              title="Editar cantidad"
+                            >
+                              <Pencil size={14} />
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => eliminarRegistro(item.id)}
+                            className="p-1.5 bg-rose-100 hover:bg-rose-200 text-rose-600 rounded-lg transition shrink-0"
+                            title="Eliminar registro"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        )}
                       </div>
+
+                      {/* Panel de Edición Inline */}
+                      {esEditando && (
+                        <div className="pt-2 border-t border-rose-200/60 flex items-center justify-between gap-2 bg-white p-2 rounded-lg border border-slate-200">
+                          <span className="text-xs font-bold text-slate-600">Corregir:</span>
+                          
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => setCantEditada(Math.max(0, cantEditada - 1))}
+                              className="w-8 h-8 bg-slate-100 text-slate-800 font-bold rounded-md border border-slate-200 active:bg-slate-200"
+                            >-</button>
+                            <input
+                              type="number"
+                              value={cantEditada}
+                              onChange={(e) => setCantEditada(parseInt(e.target.value) || 0)}
+                              className="w-12 text-center text-sm font-extrabold text-rose-600 border border-slate-200 rounded-md py-1"
+                            />
+                            <button
+                              onClick={() => setCantEditada(cantEditada + 1)}
+                              className="w-8 h-8 bg-slate-100 text-slate-800 font-bold rounded-md border border-slate-200 active:bg-slate-200"
+                            >+</button>
+                          </div>
+
+                          <div className="flex items-center gap-1">
+                            <button
+                              onClick={() => guardarEdicionCantidad(item.id)}
+                              className="p-2 bg-emerald-500 text-white rounded-lg hover:bg-emerald-600 transition"
+                              title="Guardar cambio"
+                            >
+                              <Check size={14} />
+                            </button>
+                            <button
+                              onClick={() => setRegistroEditandoId(null)}
+                              className="p-2 bg-slate-200 text-slate-600 rounded-lg hover:bg-slate-300 transition"
+                              title="Cancelar"
+                            >
+                              <X size={14} />
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
