@@ -20,13 +20,12 @@ export default function App() {
   const [inputNombre, setInputNombre] = useState('');
   const [editandoUsuario, setEditandoUsuario] = useState(false);
 
-  // Estado para desplegar la bolsa
+  // Estado para desplegar la bolsa (resumen único)
   const [mostrarDetalleHoy, setMostrarDetalleHoy] = useState(false);
   const [listaHoy, setListaHoy] = useState([]);
-  const [registrosHoy, setRegistrosHoy] = useState([]);
 
-  // Estados para edición de un registro existente
-  const [registroEditandoId, setRegistroEditandoId] = useState(null);
+  // Estados para edición directa de producto en el resumen
+  const [productoEditandoKey, setProductoEditandoKey] = useState(null);
   const [cantEditada, setCantEditada] = useState(1);
 
   // Formulario para producto nuevo
@@ -83,9 +82,6 @@ export default function App() {
       .order('created_at', { ascending: false });
 
     if (!error && data) {
-      setRegistrosHoy(data);
-
-      // Agrupar productos para evitar sumar conteos repetidos de inicio y cierre
       const acumulado = {};
       data.forEach(item => {
         const nombre = item.productos?.nombre || 'Producto sin nombre';
@@ -96,8 +92,11 @@ export default function App() {
 
         if (!acumulado[key]) {
           acumulado[key] = {
+            key,
             nombre,
             codigo,
+            ids: [],
+            latest_id: item.id,
             total: 0,
             desglose: {
               inicio_turno: 0,
@@ -107,7 +106,8 @@ export default function App() {
           };
         }
 
-        // Registrar cantidad por evento
+        acumulado[key].ids.push(item.id);
+
         if (acumulado[key].desglose[tipo] !== undefined) {
           acumulado[key].desglose[tipo] += cant;
         } else {
@@ -132,7 +132,6 @@ export default function App() {
         };
       });
 
-      // El total en bolsa es la suma de los conteos únicos por producto
       const sumaTotalUnica = listaAgrupada.reduce((acc, curr) => acc + curr.total, 0);
 
       setTotalHoy(sumaTotalUnica);
@@ -271,52 +270,53 @@ export default function App() {
     }
   };
 
-  // --- Funciones para Editar o Eliminar Unidades de la Bolsa ---
+  // --- Funciones para Editar o Eliminar Unidades Directamente en el Resumen ---
   const iniciarEdicion = (item) => {
-    setRegistroEditandoId(item.id);
-    setCantEditada(item.cantidad_piso);
+    setProductoEditandoKey(item.key);
+    setCantEditada(item.total);
   };
 
-  const guardarEdicionCantidad = async (id) => {
+  const guardarEdicionCantidad = async (item) => {
     if (cantEditada <= 0) {
-      eliminarRegistro(id);
+      eliminarProductoCompleto(item);
       return;
     }
 
+    // Actualizar el registro principal del producto para hoy
     const { error } = await supabase
       .from('registros_conteo')
       .update({ cantidad_piso: cantEditada })
-      .eq('id', id);
+      .eq('id', item.latest_id);
 
     if (error) {
       alert("Error al actualizar: " + error.message);
     } else {
-      setRegistroEditandoId(null);
+      setProductoEditandoKey(null);
       setMensaje('¡Cantidad corregida exitosamente!');
       cargarTotalHoy();
       setTimeout(() => setMensaje(''), 3000);
     }
   };
 
-  const eliminarRegistro = async (id) => {
-    if (!window.confirm("¿Deseas eliminar este registro de tu bolsa?")) return;
+  const eliminarProductoCompleto = async (item) => {
+    if (!window.confirm(`¿Deseas eliminar "${item.nombre}" de tu bolsa?`)) return;
 
     const { error } = await supabase
       .from('registros_conteo')
       .delete()
-      .eq('id', id);
+      .in('id', item.ids);
 
     if (error) {
       alert("Error al eliminar: " + error.message);
     } else {
-      setRegistroEditandoId(null);
-      setMensaje('Registro eliminado de la bolsa.');
+      setProductoEditandoKey(null);
+      setMensaje('Producto eliminado de tu bolsa.');
       cargarTotalHoy();
       setTimeout(() => setMensaje(''), 3000);
     }
   };
 
-  // Exportación optimizada para vaciar la bolsa correctamente en iOS y Android
+  // Exportación optimizada para vaciar la bolsa en iOS y Android
   const exportarExcelHoy = async () => {
     if (!nombreUsuario) return;
 
@@ -335,7 +335,7 @@ export default function App() {
       return;
     }
 
-    // 1. Preparar la hoja de Excel en memoria
+    // 1. Preparar hoja de Excel
     const datosFormateados = data.map(row => ({
       'Usuario': nombreUsuario,
       'Hora': new Date(row.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -351,7 +351,7 @@ export default function App() {
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, `Conteos_${nombreUsuario}`);
 
-    // 2. Borrar en Supabase ANTES de la descarga del archivo (evita congelamiento de red en Safari iOS)
+    // 2. Borrar en Supabase ANTES de la descarga (evita congelamiento de red en Safari iOS)
     const idsAEliminar = data.map(item => item.id);
     const { error: deleteError } = await supabase
       .from('registros_conteo')
@@ -363,14 +363,13 @@ export default function App() {
       return;
     }
 
-    // 3. Reiniciar la bolsa a 0 en la pantalla inmediatamente
+    // 3. Reiniciar la bolsa a 0 en pantalla
     setTotalHoy(0);
     setListaHoy([]);
-    setRegistrosHoy([]);
     setMostrarDetalleHoy(false);
     setMensaje(`¡Excel de ${nombreUsuario} exportado y bolsa vaciada a 0!`);
 
-    // 4. Iniciar la descarga del Excel al final
+    // 4. Descargar archivo Excel
     XLSX.writeFile(workbook, `Reporte_${nombreUsuario}_${fechaHoy}.xlsx`);
 
     setTimeout(() => setMensaje(''), 4000);
@@ -426,7 +425,7 @@ export default function App() {
         </div>
       </header>
 
-      {/* Sección Bolsa con Conteo Único por Producto */}
+      {/* Sección Bolsa con Resumen de Productos Editable Directamente */}
       <div className="bg-white/90 backdrop-blur border border-rose-100 rounded-2xl p-4 mb-4 shadow-sm">
         <div 
           onClick={() => setMostrarDetalleHoy(!mostrarDetalleHoy)}
@@ -447,26 +446,46 @@ export default function App() {
         </div>
 
         {mostrarDetalleHoy && (
-          <div className="mt-4 pt-3 border-t border-rose-100 space-y-4">
-            {/* Lista agrupada de productos */}
-            <div>
-              <h3 className="text-xs font-extrabold text-slate-700 uppercase tracking-wider mb-2">
-                Resumen de Productos ({listaHoy.length})
-              </h3>
-              {listaHoy.length === 0 ? (
-                <p className="text-xs text-slate-400 italic">No has registrado productos en tu bolsa hoy.</p>
-              ) : (
-                <div className="max-h-56 overflow-y-auto space-y-2 pr-1">
-                  {listaHoy.map((item, index) => (
-                    <div key={index} className="bg-rose-50/70 p-3 rounded-xl border border-rose-100/80 space-y-2">
-                      <div className="flex justify-between items-start">
-                        <div className="max-w-[70%]">
+          <div className="mt-4 pt-3 border-t border-rose-100 space-y-3">
+            <h3 className="text-xs font-extrabold text-slate-700 uppercase tracking-wider mb-2">
+              Resumen de Productos ({listaHoy.length})
+            </h3>
+            {listaHoy.length === 0 ? (
+              <p className="text-xs text-slate-400 italic">No me has registrado productos en tu bolsa hoy.</p>
+            ) : (
+              <div className="max-h-72 overflow-y-auto space-y-2.5 pr-1">
+                {listaHoy.map((item) => {
+                  const esEditando = productoEditandoKey === item.key;
+
+                  return (
+                    <div key={item.key} className="bg-rose-50/70 p-3 rounded-xl border border-rose-100/80 space-y-2">
+                      <div className="flex justify-between items-start gap-2">
+                        <div className="max-w-[60%]">
                           <p className="text-xs font-bold text-slate-800 leading-tight">{item.nombre}</p>
                           <p className="text-[10px] text-slate-400 font-mono mt-0.5">{item.codigo}</p>
                         </div>
-                        <span className="px-2.5 py-1 bg-white text-rose-600 font-black text-xs rounded-lg shadow-sm border border-rose-100 shrink-0">
-                          Total: {item.total} pcs
-                        </span>
+
+                        {!esEditando ? (
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <span className="px-2.5 py-1 bg-white text-rose-600 font-black text-xs rounded-lg shadow-sm border border-rose-100">
+                              Total: {item.total} pcs
+                            </span>
+                            <button
+                              onClick={() => iniciarEdicion(item)}
+                              className="p-1.5 bg-white hover:bg-slate-200 text-slate-600 rounded-lg border border-slate-200 transition"
+                              title="Editar cantidad"
+                            >
+                              <Pencil size={13} />
+                            </button>
+                            <button
+                              onClick={() => eliminarProductoCompleto(item)}
+                              className="p-1.5 bg-rose-100 hover:bg-rose-200 text-rose-600 rounded-lg transition"
+                              title="Eliminar producto"
+                            >
+                              <Trash2 size={13} />
+                            </button>
+                          </div>
+                        ) : null}
                       </div>
 
                       {/* Desglose por Turno */}
@@ -487,65 +506,11 @@ export default function App() {
                           </div>
                         </div>
                       </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
 
-            {/* Historial Individual con Opción a Editar/Eliminar */}
-            <div className="pt-2 border-t border-slate-100">
-              <h3 className="text-xs font-extrabold text-slate-700 uppercase tracking-wider mb-2">
-                Historial de Capturas ({registrosHoy.length})
-              </h3>
-              <div className="max-h-56 overflow-y-auto space-y-2 pr-1">
-                {registrosHoy.map((item) => {
-                  const nombre = item.productos?.nombre || 'Producto sin nombre';
-                  const hora = new Date(item.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                  const esEditando = registroEditandoId === item.id;
-
-                  const etiquetaEvento = 
-                    item.tipo_registro === 'inicio_turno' ? '🔓 Inicio' :
-                    item.tipo_registro === 'fin_turno' ? '🔒 Cierre' : '⏱️ Corte';
-
-                  return (
-                    <div key={item.id} className="bg-slate-50 p-2.5 rounded-xl border border-slate-200/80 space-y-2">
-                      <div className="flex justify-between items-start gap-2">
-                        <div className="max-w-[65%]">
-                          <p className="text-xs font-bold text-slate-800 leading-tight">{nombre}</p>
-                          <span className="inline-block text-[10px] bg-white px-2 py-0.5 rounded font-medium text-slate-500 border border-slate-200 mt-1">
-                            {etiquetaEvento} • {hora}
-                          </span>
-                        </div>
-
-                        {!esEditando ? (
-                          <div className="flex items-center gap-1.5 shrink-0">
-                            <span className="px-2 py-0.5 bg-white text-slate-700 font-bold text-xs rounded shadow-2xs border border-slate-200">
-                              {item.cantidad_piso} pcs
-                            </span>
-                            <button
-                              onClick={() => iniciarEdicion(item)}
-                              className="p-1.5 bg-white hover:bg-slate-200 text-slate-600 rounded-lg border border-slate-200 transition"
-                              title="Editar cantidad"
-                            >
-                              <Pencil size={13} />
-                            </button>
-                          </div>
-                        ) : (
-                          <button
-                            onClick={() => eliminarRegistro(item.id)}
-                            className="p-1.5 bg-rose-100 hover:bg-rose-200 text-rose-600 rounded-lg transition shrink-0"
-                            title="Eliminar registro"
-                          >
-                            <Trash2 size={13} />
-                          </button>
-                        )}
-                      </div>
-
-                      {/* Panel Edición Inline */}
+                      {/* Panel Edición Inline Directo */}
                       {esEditando && (
-                        <div className="pt-2 border-t border-slate-200 flex items-center justify-between gap-2 bg-white p-2 rounded-lg">
-                          <span className="text-xs font-bold text-slate-600">Corregir:</span>
+                        <div className="pt-2 border-t border-slate-200 flex items-center justify-between gap-2 bg-white p-2 rounded-lg mt-2">
+                          <span className="text-xs font-bold text-slate-600">Corregir total:</span>
                           
                           <div className="flex items-center gap-1.5">
                             <button
@@ -566,14 +531,16 @@ export default function App() {
 
                           <div className="flex items-center gap-1">
                             <button
-                              onClick={() => guardarEdicionCantidad(item.id)}
+                              onClick={() => guardarEdicionCantidad(item)}
                               className="p-1.5 bg-emerald-500 text-white rounded-md hover:bg-emerald-600 transition"
+                              title="Guardar"
                             >
                               <Check size={14} />
                             </button>
                             <button
-                              onClick={() => setRegistroEditandoId(null)}
+                              onClick={() => setProductoEditandoKey(null)}
                               className="p-1.5 bg-slate-200 text-slate-600 rounded-md hover:bg-slate-300 transition"
+                              title="Cancelar"
                             >
                               <X size={14} />
                             </button>
@@ -584,7 +551,7 @@ export default function App() {
                   );
                 })}
               </div>
-            </div>
+            )}
           </div>
         )}
       </div>
