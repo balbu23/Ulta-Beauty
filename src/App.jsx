@@ -503,9 +503,7 @@ export default function App() {
 
                     {/* Desglose por Turno con Botón de Edición Individual */}
                     <div className="pt-2 border-t border-rose-200/60">
-                      <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
-                        Desglose por turno (toca ✏️ para modificar):
-                      </p>
+
                       <div className="grid grid-cols-3 gap-1.5 text-[10px]">
 
                         {/* Cuadro Inicio */}
