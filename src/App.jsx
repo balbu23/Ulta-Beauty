@@ -20,13 +20,13 @@ export default function App() {
   const [inputNombre, setInputNombre] = useState('');
   const [editandoUsuario, setEditandoUsuario] = useState(false);
 
-  // Estado para desplegar la bolsa (resumen único)
+  // Estado para desplegar la bolsa
   const [mostrarDetalleHoy, setMostrarDetalleHoy] = useState(false);
   const [listaHoy, setListaHoy] = useState([]);
 
-  // Estados para edición directa de producto en el resumen
-  const [productoEditandoKey, setProductoEditandoKey] = useState(null);
-  const [cantEditada, setCantEditada] = useState(1);
+  // Estados para edición directa por turno (Inicio / Corte / Cierre)
+  const [editTurnoTarget, setEditTurnoTarget] = useState(null); // { key, turnType, id, codigo, nombre, producto_id }
+  const [cantEditadaTurno, setCantEditadaTurno] = useState(0);
 
   // Formulario para producto nuevo
   const [nuevoNombre, setNuevoNombre] = useState('');
@@ -67,7 +67,7 @@ export default function App() {
     return () => document.removeEventListener('visibilitychange', handleVisibility);
   }, [scanning]);
 
-  // Cargar totales únicos por producto y desglose por turno
+  // Cargar totales únicos por producto y desgloses por turno
   const cargarTotalHoy = async () => {
     if (!nombreUsuario) return;
 
@@ -76,7 +76,7 @@ export default function App() {
 
     const { data, error } = await supabase
       .from('registros_conteo')
-      .select('id, created_at, cantidad_piso, tipo_registro, codigo_barras, productos(nombre, codigo_barras)')
+      .select('id, created_at, cantidad_piso, tipo_registro, codigo_barras, producto_id, productos(id, nombre, codigo_barras)')
       .gte('created_at', inicioHoy.toISOString())
       .eq('usuario', nombreUsuario)
       .order('created_at', { ascending: false });
@@ -89,41 +89,40 @@ export default function App() {
         const key = `${nombre}_${codigo}`;
         const tipo = item.tipo_registro || 'inicio_turno';
         const cant = item.cantidad_piso || 0;
+        const prodId = item.producto_id || item.productos?.id;
 
         if (!acumulado[key]) {
           acumulado[key] = {
             key,
             nombre,
             codigo,
+            producto_id: prodId,
             ids: [],
-            latest_id: item.id,
-            total: 0,
-            desglose: {
-              inicio_turno: 0,
-              corte_horario: 0,
-              fin_turno: 0
+            turns: {
+              inicio_turno: { id: null, cant: 0 },
+              corte_horario: { id: null, cant: 0 },
+              fin_turno: { id: null, cant: 0 }
             }
           };
         }
 
         acumulado[key].ids.push(item.id);
 
-        if (acumulado[key].desglose[tipo] !== undefined) {
-          acumulado[key].desglose[tipo] += cant;
-        } else {
-          acumulado[key].desglose[tipo] = cant;
+        if (!acumulado[key].turns[tipo].id) {
+          acumulado[key].turns[tipo].id = item.id;
         }
+        acumulado[key].turns[tipo].cant += cant;
       });
 
       // Determinar la cantidad real única por producto (prioriza Inicio de Turno)
       const listaAgrupada = Object.values(acumulado).map(item => {
         let totalCalculado = 0;
-        if (item.desglose.inicio_turno > 0) {
-          totalCalculado = item.desglose.inicio_turno;
-        } else if (item.desglose.corte_horario > 0) {
-          totalCalculado = item.desglose.corte_horario;
+        if (item.turns.inicio_turno.cant > 0) {
+          totalCalculado = item.turns.inicio_turno.cant;
+        } else if (item.turns.corte_horario.cant > 0) {
+          totalCalculado = item.turns.corte_horario.cant;
         } else {
-          totalCalculado = item.desglose.fin_turno;
+          totalCalculado = item.turns.fin_turno.cant;
         }
 
         return {
@@ -270,32 +269,62 @@ export default function App() {
     }
   };
 
-  // --- Funciones para Editar o Eliminar Unidades Directamente en el Resumen ---
-  const iniciarEdicion = (item) => {
-    setProductoEditandoKey(item.key);
-    setCantEditada(item.total);
+  // --- Editar un Turno Específico (Inicio / Corte / Cierre) ---
+  const iniciarEdicionTurno = (item, turnType) => {
+    const turnData = item.turns[turnType];
+    setEditTurnoTarget({
+      key: item.key,
+      turnType: turnType,
+      id: turnData.id,
+      codigo: item.codigo,
+      nombre: item.nombre,
+      producto_id: item.producto_id
+    });
+    setCantEditadaTurno(turnData.cant);
   };
 
-  const guardarEdicionCantidad = async (item) => {
-    if (cantEditada <= 0) {
-      eliminarProductoCompleto(item);
-      return;
+  const guardarEdicionTurno = async () => {
+    if (!editTurnoTarget) return;
+
+    const { id, turnType, codigo, nombre, producto_id } = editTurnoTarget;
+
+    if (id) {
+      if (cantEditadaTurno <= 0) {
+        const { error } = await supabase.from('registros_conteo').delete().eq('id', id);
+        if (error) alert("Error al eliminar conteo: " + error.message);
+      } else {
+        const { error } = await supabase
+          .from('registros_conteo')
+          .update({ cantidad_piso: cantEditadaTurno })
+          .eq('id', id);
+        if (error) alert("Error al actualizar conteo: " + error.message);
+      }
+    } else if (cantEditadaTurno > 0) {
+      let prodId = producto_id;
+
+      if (!prodId) {
+        const { data: upsertedProd } = await supabase
+          .from('productos')
+          .upsert({ codigo_barras: codigo, nombre: nombre }, { onConflict: 'codigo_barras' })
+          .select()
+          .single();
+        prodId = upsertedProd?.id;
+      }
+
+      const { error } = await supabase.from('registros_conteo').insert([{
+        producto_id: prodId || null,
+        codigo_barras: codigo,
+        usuario: nombreUsuario,
+        tipo_registro: turnType,
+        cantidad_piso: cantEditadaTurno
+      }]);
+      if (error) alert("Error al registrar conteo: " + error.message);
     }
 
-    // Actualizar el registro principal del producto para hoy
-    const { error } = await supabase
-      .from('registros_conteo')
-      .update({ cantidad_piso: cantEditada })
-      .eq('id', item.latest_id);
-
-    if (error) {
-      alert("Error al actualizar: " + error.message);
-    } else {
-      setProductoEditandoKey(null);
-      setMensaje('¡Cantidad corregida exitosamente!');
-      cargarTotalHoy();
-      setTimeout(() => setMensaje(''), 3000);
-    }
+    setEditTurnoTarget(null);
+    setMensaje('¡Conteo del turno actualizado!');
+    cargarTotalHoy();
+    setTimeout(() => setMensaje(''), 3000);
   };
 
   const eliminarProductoCompleto = async (item) => {
@@ -309,7 +338,7 @@ export default function App() {
     if (error) {
       alert("Error al eliminar: " + error.message);
     } else {
-      setProductoEditandoKey(null);
+      setEditTurnoTarget(null);
       setMensaje('Producto eliminado de tu bolsa.');
       cargarTotalHoy();
       setTimeout(() => setMensaje(''), 3000);
@@ -335,7 +364,6 @@ export default function App() {
       return;
     }
 
-    // 1. Preparar hoja de Excel
     const datosFormateados = data.map(row => ({
       'Usuario': nombreUsuario,
       'Hora': new Date(row.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -351,7 +379,6 @@ export default function App() {
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, `Conteos_${nombreUsuario}`);
 
-    // 2. Borrar en Supabase ANTES de la descarga (evita congelamiento de red en Safari iOS)
     const idsAEliminar = data.map(item => item.id);
     const { error: deleteError } = await supabase
       .from('registros_conteo')
@@ -363,13 +390,11 @@ export default function App() {
       return;
     }
 
-    // 3. Reiniciar la bolsa a 0 en pantalla
     setTotalHoy(0);
     setListaHoy([]);
     setMostrarDetalleHoy(false);
     setMensaje(`¡Excel de ${nombreUsuario} exportado y bolsa vaciada a 0!`);
 
-    // 4. Descargar archivo Excel
     XLSX.writeFile(workbook, `Reporte_${nombreUsuario}_${fechaHoy}.xlsx`);
 
     setTimeout(() => setMensaje(''), 4000);
@@ -425,7 +450,7 @@ export default function App() {
         </div>
       </header>
 
-      {/* Sección Bolsa con Resumen de Productos Editable Directamente */}
+      {/* Sección Bolsa con Edición por Turno */}
       <div className="bg-white/90 backdrop-blur border border-rose-100 rounded-2xl p-4 mb-4 shadow-sm">
         <div 
           onClick={() => setMostrarDetalleHoy(!mostrarDetalleHoy)}
@@ -451,105 +476,151 @@ export default function App() {
               Resumen de Productos ({listaHoy.length})
             </h3>
             {listaHoy.length === 0 ? (
-              <p className="text-xs text-slate-400 italic">No me has registrado productos en tu bolsa hoy.</p>
+              <p className="text-xs text-slate-400 italic">No has registrado productos en tu bolsa hoy.</p>
             ) : (
-              <div className="max-h-72 overflow-y-auto space-y-2.5 pr-1">
-                {listaHoy.map((item) => {
-                  const esEditando = productoEditandoKey === item.key;
-
-                  return (
-                    <div key={item.key} className="bg-rose-50/70 p-3 rounded-xl border border-rose-100/80 space-y-2">
-                      <div className="flex justify-between items-start gap-2">
-                        <div className="max-w-[60%]">
-                          <p className="text-xs font-bold text-slate-800 leading-tight">{item.nombre}</p>
-                          <p className="text-[10px] text-slate-400 font-mono mt-0.5">{item.codigo}</p>
-                        </div>
-
-                        {!esEditando ? (
-                          <div className="flex items-center gap-1.5 shrink-0">
-                            <span className="px-2.5 py-1 bg-white text-rose-600 font-black text-xs rounded-lg shadow-sm border border-rose-100">
-                              Total: {item.total} pcs
-                            </span>
-                            <button
-                              onClick={() => iniciarEdicion(item)}
-                              className="p-1.5 bg-white hover:bg-slate-200 text-slate-600 rounded-lg border border-slate-200 transition"
-                              title="Editar cantidad"
-                            >
-                              <Pencil size={13} />
-                            </button>
-                            <button
-                              onClick={() => eliminarProductoCompleto(item)}
-                              className="p-1.5 bg-rose-100 hover:bg-rose-200 text-rose-600 rounded-lg transition"
-                              title="Eliminar producto"
-                            >
-                              <Trash2 size={13} />
-                            </button>
-                          </div>
-                        ) : null}
+              <div className="max-h-80 overflow-y-auto space-y-3 pr-1">
+                {listaHoy.map((item) => (
+                  <div key={item.key} className="bg-rose-50/70 p-3 rounded-xl border border-rose-100/80 space-y-2">
+                    <div className="flex justify-between items-start gap-2">
+                      <div className="max-w-[65%]">
+                        <p className="text-xs font-bold text-slate-800 leading-tight">{item.nombre}</p>
+                        <p className="text-[10px] text-slate-400 font-mono mt-0.5">{item.codigo}</p>
                       </div>
 
-                      {/* Desglose por Turno */}
-                      <div className="pt-2 border-t border-rose-200/60">
-                        <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Desglose por turno:</p>
-                        <div className="grid grid-cols-3 gap-1.5 text-[10px]">
-                          <div className="bg-white/90 p-1.5 rounded-lg text-center border border-slate-100">
-                            <span className="block text-slate-400 font-medium">🔓 Inicio</span>
-                            <span className="font-extrabold text-slate-800">{item.desglose.inicio_turno} pcs</span>
-                          </div>
-                          <div className="bg-white/90 p-1.5 rounded-lg text-center border border-slate-100">
-                            <span className="block text-slate-400 font-medium">⏱️ Corte</span>
-                            <span className="font-extrabold text-slate-800">{item.desglose.corte_horario} pcs</span>
-                          </div>
-                          <div className="bg-white/90 p-1.5 rounded-lg text-center border border-slate-100">
-                            <span className="block text-slate-400 font-medium">🔒 Cierre</span>
-                            <span className="font-extrabold text-slate-800">{item.desglose.fin_turno} pcs</span>
-                          </div>
-                        </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <span className="px-2.5 py-1 bg-white text-rose-600 font-black text-xs rounded-lg shadow-sm border border-rose-100">
+                          Total: {item.total} pcs
+                        </span>
+                        <button
+                          onClick={() => eliminarProductoCompleto(item)}
+                          className="p-1.5 bg-rose-100 hover:bg-rose-200 text-rose-600 rounded-lg transition"
+                          title="Eliminar producto"
+                        >
+                          <Trash2 size={13} />
+                        </button>
                       </div>
-
-                      {/* Panel Edición Inline Directo */}
-                      {esEditando && (
-                        <div className="pt-2 border-t border-slate-200 flex items-center justify-between gap-2 bg-white p-2 rounded-lg mt-2">
-                          <span className="text-xs font-bold text-slate-600">Corregir total:</span>
-                          
-                          <div className="flex items-center gap-1.5">
-                            <button
-                              onClick={() => setCantEditada(Math.max(0, cantEditada - 1))}
-                              className="w-7 h-7 bg-slate-100 text-slate-800 font-bold rounded border border-slate-200"
-                            >-</button>
-                            <input
-                              type="number"
-                              value={cantEditada}
-                              onChange={(e) => setCantEditada(parseInt(e.target.value) || 0)}
-                              className="w-12 text-center text-xs font-black text-rose-600 border border-slate-200 rounded py-1"
-                            />
-                            <button
-                              onClick={() => setCantEditada(cantEditada + 1)}
-                              className="w-7 h-7 bg-slate-100 text-slate-800 font-bold rounded border border-slate-200"
-                            >+</button>
-                          </div>
-
-                          <div className="flex items-center gap-1">
-                            <button
-                              onClick={() => guardarEdicionCantidad(item)}
-                              className="p-1.5 bg-emerald-500 text-white rounded-md hover:bg-emerald-600 transition"
-                              title="Guardar"
-                            >
-                              <Check size={14} />
-                            </button>
-                            <button
-                              onClick={() => setProductoEditandoKey(null)}
-                              className="p-1.5 bg-slate-200 text-slate-600 rounded-md hover:bg-slate-300 transition"
-                              title="Cancelar"
-                            >
-                              <X size={14} />
-                            </button>
-                          </div>
-                        </div>
-                      )}
                     </div>
-                  );
-                })}
+
+                    {/* Desglose por Turno con Botón de Edición Individual */}
+                    <div className="pt-2 border-t border-rose-200/60">
+                      <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+                        Desglose por turno (toca ✏️ para modificar):
+                      </p>
+                      <div className="grid grid-cols-3 gap-1.5 text-[10px]">
+
+                        {/* Cuadro Inicio */}
+                        <div className={`p-1.5 rounded-lg text-center border relative transition ${
+                          editTurnoTarget?.key === item.key && editTurnoTarget?.turnType === 'inicio_turno'
+                            ? 'bg-rose-100 border-rose-400 ring-2 ring-rose-200'
+                            : 'bg-white/90 border-slate-100'
+                        }`}>
+                          <div className="flex items-center justify-between px-0.5">
+                            <span className="text-slate-400 font-medium text-[9px]">🔓 Inicio</span>
+                            <button
+                              onClick={() => iniciarEdicionTurno(item, 'inicio_turno')}
+                              className="text-slate-400 hover:text-rose-600 transition"
+                              title="Modificar Inicio"
+                            >
+                              <Pencil size={10} />
+                            </button>
+                          </div>
+                          <span className="block font-extrabold text-slate-800 text-xs mt-0.5">
+                            {item.turns.inicio_turno.cant} pcs
+                          </span>
+                        </div>
+
+                        {/* Cuadro Corte */}
+                        <div className={`p-1.5 rounded-lg text-center border relative transition ${
+                          editTurnoTarget?.key === item.key && editTurnoTarget?.turnType === 'corte_horario'
+                            ? 'bg-rose-100 border-rose-400 ring-2 ring-rose-200'
+                            : 'bg-white/90 border-slate-100'
+                        }`}>
+                          <div className="flex items-center justify-between px-0.5">
+                            <span className="text-slate-400 font-medium text-[9px]">⏱️ Corte</span>
+                            <button
+                              onClick={() => iniciarEdicionTurno(item, 'corte_horario')}
+                              className="text-slate-400 hover:text-rose-600 transition"
+                              title="Modificar Corte"
+                            >
+                              <Pencil size={10} />
+                            </button>
+                          </div>
+                          <span className="block font-extrabold text-slate-800 text-xs mt-0.5">
+                            {item.turns.corte_horario.cant} pcs
+                          </span>
+                        </div>
+
+                        {/* Cuadro Cierre */}
+                        <div className={`p-1.5 rounded-lg text-center border relative transition ${
+                          editTurnoTarget?.key === item.key && editTurnoTarget?.turnType === 'fin_turno'
+                            ? 'bg-rose-100 border-rose-400 ring-2 ring-rose-200'
+                            : 'bg-white/90 border-slate-100'
+                        }`}>
+                          <div className="flex items-center justify-between px-0.5">
+                            <span className="text-slate-400 font-medium text-[9px]">🔒 Cierre</span>
+                            <button
+                              onClick={() => iniciarEdicionTurno(item, 'fin_turno')}
+                              className="text-slate-400 hover:text-rose-600 transition"
+                              title="Modificar Cierre"
+                            >
+                              <Pencil size={10} />
+                            </button>
+                          </div>
+                          <span className="block font-extrabold text-slate-800 text-xs mt-0.5">
+                            {item.turns.fin_turno.cant} pcs
+                          </span>
+                        </div>
+
+                      </div>
+                    </div>
+
+                    {/* Panel de Edición Inline para el Turno Seleccionado */}
+                    {editTurnoTarget?.key === item.key && (
+                      <div className="mt-2 pt-2 border-t border-rose-200 flex items-center justify-between gap-2 bg-white p-2 rounded-lg border border-rose-300 shadow-sm">
+                        <span className="text-[11px] font-bold text-slate-700">
+                          Modificar {
+                            editTurnoTarget.turnType === 'inicio_turno' ? '🔓 Inicio' :
+                            editTurnoTarget.turnType === 'corte_horario' ? '⏱️ Corte' : '🔒 Cierre'
+                          }:
+                        </span>
+                        
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={() => setCantEditadaTurno(Math.max(0, cantEditadaTurno - 1))}
+                            className="w-7 h-7 bg-slate-100 text-slate-800 font-bold rounded border border-slate-200 active:bg-slate-200"
+                          >-</button>
+                          <input
+                            type="number"
+                            value={cantEditadaTurno}
+                            onChange={(e) => setCantEditadaTurno(parseInt(e.target.value) || 0)}
+                            className="w-12 text-center text-xs font-black text-rose-600 border border-slate-200 rounded py-1"
+                          />
+                          <button
+                            onClick={() => setCantEditadaTurno(cantEditadaTurno + 1)}
+                            className="w-7 h-7 bg-slate-100 text-slate-800 font-bold rounded border border-slate-200 active:bg-slate-200"
+                          >+</button>
+                        </div>
+
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={guardarEdicionTurno}
+                            className="p-1.5 bg-emerald-500 text-white rounded-md hover:bg-emerald-600 transition"
+                            title="Guardar"
+                          >
+                            <Check size={14} />
+                          </button>
+                          <button
+                            onClick={() => setEditTurnoTarget(null)}
+                            className="p-1.5 bg-slate-200 text-slate-600 rounded-md hover:bg-slate-300 transition"
+                            title="Cancelar"
+                          >
+                            <X size={14} />
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
               </div>
             )}
           </div>
