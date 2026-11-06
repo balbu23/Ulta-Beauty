@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { supabase } from './supabaseClient';
 import { Scanner } from './components/Scanner';
 import * as XLSX from 'xlsx';
-import { Scan, Plus, FileSpreadsheet, Sparkles, CheckCircle2, PackageCheck, ShoppingBag, ChevronDown, ChevronUp, User, UserCheck } from 'lucide-react';
+import { Scan, Plus, FileSpreadsheet, Sparkles, CheckCircle2, PackageCheck, ShoppingBag, ChevronDown, ChevronUp, User, UserCheck, X } from 'lucide-react';
 
 export default function App() {
   const [scanning, setScanning] = useState(false);
@@ -12,12 +12,12 @@ export default function App() {
   const [mensaje, setMensaje] = useState('');
   const [totalHoy, setTotalHoy] = useState(0);
 
-  // Nombre del usuario/colaboradora (guardado en el navegador)
+  // Nombre del usuario/colaboradora
   const [nombreUsuario, setNombreUsuario] = useState(() => localStorage.getItem('ulta_usuario') || '');
   const [inputNombre, setInputNombre] = useState('');
   const [editandoUsuario, setEditandoUsuario] = useState(false);
 
-  // Estado para desplegar el resumen por productos
+  // Estado para desplegar la bolsa
   const [mostrarDetalleHoy, setMostrarDetalleHoy] = useState(false);
   const [listaHoy, setListaHoy] = useState([]);
 
@@ -27,7 +27,7 @@ export default function App() {
   const [esNuevo, setEsNuevo] = useState(false);
   const [procesando, setProcesando] = useState(false);
 
-  // 1. Escuchar cuando regrese el Wi-Fi/datos y subir escaneos pendientes
+  // Sincronización de escaneos offline
   useEffect(() => {
     const sincronizarOffline = async () => {
       const cola = JSON.parse(localStorage.getItem('cola_escaneos') || '[]');
@@ -35,7 +35,7 @@ export default function App() {
         const { error } = await supabase.from('registros_conteo').insert(cola);
         if (!error) {
           localStorage.removeItem('cola_escaneos');
-          setMensaje('¡Escaneos guardados offline sincronizados exitosamente!');
+          setMensaje('¡Escaneos guardados offline sincronizados!');
           cargarTotalHoy();
           setTimeout(() => setMensaje(''), 4000);
         }
@@ -48,7 +48,7 @@ export default function App() {
     return () => window.removeEventListener('online', sincronizarOffline);
   }, [nombreUsuario]);
 
-  // 2. Despertar la cámara si la usuaria bloqueó el celular o cambió de app
+  // Despertar la cámara tras cambio de app
   useEffect(() => {
     const handleVisibility = () => {
       if (document.visibilityState === 'visible' && scanning) {
@@ -60,16 +60,7 @@ export default function App() {
     return () => document.removeEventListener('visibilitychange', handleVisibility);
   }, [scanning]);
 
-  // 3. Mantener la sesión de Supabase renovada
-  useEffect(() => {
-    const { data: authListener } = supabase.auth.onAuthStateChange((event) => {
-      if (event === 'TOKEN_REFRESHED') {
-        console.log('Sesión de Supabase renovada en segundo plano');
-      }
-    });
-    return () => authListener?.subscription?.unsubscribe();
-  }, []);
-
+  // Cargar totales y desglose por producto
   const cargarTotalHoy = async () => {
     if (!nombreUsuario) return;
 
@@ -78,24 +69,42 @@ export default function App() {
 
     const { data, error } = await supabase
       .from('registros_conteo')
-      .select('cantidad_piso, codigo_barras, productos(nombre, codigo_barras)')
+      .select('cantidad_piso, tipo_registro, codigo_barras, productos(nombre, codigo_barras)')
       .gte('created_at', inicioHoy.toISOString())
       .eq('usuario', nombreUsuario);
 
     if (!error && data) {
-      const suma = data.reduce((acc, curr) => acc + (curr.cantidad_piso || 0), 0);
-      setTotalHoy(suma);
+      const sumaTotal = data.reduce((acc, curr) => acc + (curr.cantidad_piso || 0), 0);
+      setTotalHoy(sumaTotal);
 
+      // Agrupar productos con desglose por tipo de registro
       const acumulado = {};
       data.forEach(item => {
         const nombre = item.productos?.nombre || 'Producto sin nombre';
         const codigo = item.productos?.codigo_barras || item.codigo_barras || '';
         const key = `${nombre}_${codigo}`;
+        const tipo = item.tipo_registro || 'corte_horario';
+        const cant = item.cantidad_piso || 0;
 
         if (!acumulado[key]) {
-          acumulado[key] = { nombre, codigo, cantidad: 0 };
+          acumulado[key] = {
+            nombre,
+            codigo,
+            total: 0,
+            desglose: {
+              inicio_turno: 0,
+              corte_horario: 0,
+              fin_turno: 0
+            }
+          };
         }
-        acumulado[key].cantidad += item.cantidad_piso || 0;
+
+        acumulado[key].total += cant;
+        if (acumulado[key].desglose[tipo] !== undefined) {
+          acumulado[key].desglose[tipo] += cant;
+        } else {
+          acumulado[key].desglose[tipo] = cant;
+        }
       });
 
       setListaHoy(Object.values(acumulado));
@@ -150,8 +159,7 @@ export default function App() {
       .single();
 
     if (error) {
-      alert("Error al guardar en Supabase: " + error.message);
-      console.error(error);
+      alert("Error en Supabase: " + error.message);
       return;
     }
 
@@ -162,6 +170,12 @@ export default function App() {
     }
   };
 
+  const cancelarProductoNuevo = () => {
+    setEsNuevo(false);
+    setCodigoEscaneado('');
+    setNuevoNombre('');
+  };
+
   const guardarRegistro = async (codigoParam, datosProductoParam) => {
     if (procesando) return;
     setProcesando(true);
@@ -170,7 +184,7 @@ export default function App() {
     const nombreProd = datosProductoParam?.nombre || producto?.nombre || nuevoNombre || 'Producto Escaneado';
 
     if (!codigo) {
-      setMensaje('Error: No hay un código válido para registrar.');
+      setMensaje('Error: No hay un código válido.');
       setProcesando(false);
       return;
     }
@@ -178,7 +192,6 @@ export default function App() {
     try {
       let prodData = producto;
 
-      // 1. Guardar/asegurar el producto en el catálogo y obtener su ID de Supabase
       if (!prodData || !prodData.id) {
         const { data: upsertedProd, error: prodErr } = await supabase
           .from('productos')
@@ -193,7 +206,6 @@ export default function App() {
         prodData = upsertedProd;
       }
 
-      // 2. Vincular producto_id y codigo_barras en el conteo
       const nuevoRegistro = {
         producto_id: prodData?.id || null,
         codigo_barras: codigo,
@@ -202,12 +214,11 @@ export default function App() {
         cantidad_piso: cantidad
       };
 
-      // --- Si el celular NO tiene internet ---
       if (!navigator.onLine) {
         const cola = JSON.parse(localStorage.getItem('cola_escaneos') || '[]');
         cola.push(nuevoRegistro);
         localStorage.setItem('cola_escaneos', JSON.stringify(cola));
-        setMensaje('Sin conexión: producto guardado localmente.');
+        setMensaje('Sin conexión: guardado localmente.');
         setProducto(null);
         setCantidad(1);
         setProcesando(false);
@@ -215,9 +226,7 @@ export default function App() {
         return;
       }
 
-      // 3. Registrar el conteo
       const { error } = await supabase.from('registros_conteo').insert([nuevoRegistro]);
-
       if (error) throw error;
 
       setMensaje('¡Producto registrado correctamente!');
@@ -226,7 +235,6 @@ export default function App() {
       cargarTotalHoy();
       setTimeout(() => setMensaje(''), 4000);
     } catch (err) {
-      console.error('Error al guardar:', err.message);
       setMensaje(`Error al guardar: ${err.message}`);
       setTimeout(() => setMensaje(''), 5000);
     } finally {
@@ -267,16 +275,13 @@ export default function App() {
     XLSX.utils.book_append_sheet(workbook, worksheet, `Conteos_${nombreUsuario}`);
     XLSX.writeFile(workbook, `Reporte_${nombreUsuario}_${fechaHoy}.xlsx`);
 
-    // Vaciar los registros exportados
     const idsAEliminar = data.map(item => item.id);
     const { error: deleteError } = await supabase
       .from('registros_conteo')
       .delete()
       .in('id', idsAEliminar);
 
-    if (deleteError) {
-      console.error("Error al vaciar la bolsa:", deleteError);
-    } else {
+    if (!deleteError) {
       setMensaje(`¡Excel de ${nombreUsuario} exportado y bolsa vaciada a 0!`);
       setMostrarDetalleHoy(false);
       cargarTotalHoy();
@@ -292,7 +297,7 @@ export default function App() {
             <User size={32} />
           </div>
           <h2 className="text-xl font-extrabold text-slate-900 mb-1">¡Bienvenid@!</h2>
-          <p className="text-xs text-slate-500 mb-5">Ingresa tu nombre para identificar tus conteos de inventario</p>
+          <p className="text-xs text-slate-500 mb-5">Ingresa tu nombre para identificar tus conteos</p>
           
           <form onSubmit={guardarNombreUsuario} className="space-y-3">
             <input
@@ -334,6 +339,7 @@ export default function App() {
         </div>
       </header>
 
+      {/* Sección Bolsa con Desglose */}
       <div className="bg-white/90 backdrop-blur border border-rose-100 rounded-2xl p-4 mb-4 shadow-sm">
         <div 
           onClick={() => setMostrarDetalleHoy(!mostrarDetalleHoy)}
@@ -354,23 +360,44 @@ export default function App() {
         </div>
 
         {mostrarDetalleHoy && (
-          <div className="mt-4 pt-3 border-t border-rose-100 space-y-2">
-            <h3 className="text-xs font-extrabold text-slate-700 uppercase tracking-wider mb-2">
+          <div className="mt-4 pt-3 border-t border-rose-100 space-y-3">
+            <h3 className="text-xs font-extrabold text-slate-700 uppercase tracking-wider mb-1">
               Mis Productos Escaneados ({listaHoy.length})
             </h3>
             {listaHoy.length === 0 ? (
               <p className="text-xs text-slate-400 italic">No has registrado productos en tu bolsa hoy.</p>
             ) : (
-              <div className="max-h-52 overflow-y-auto space-y-2 pr-1">
+              <div className="max-h-64 overflow-y-auto space-y-2.5 pr-1">
                 {listaHoy.map((item, index) => (
-                  <div key={index} className="flex justify-between items-center bg-rose-50/70 p-2.5 rounded-xl border border-rose-100/80">
-                    <div className="max-w-[75%]">
-                      <p className="text-xs font-bold text-slate-800 truncate">{item.nombre}</p>
-                      <p className="text-[10px] text-slate-400 font-mono">{item.codigo}</p>
+                  <div key={index} className="bg-rose-50/70 p-3 rounded-xl border border-rose-100/80 space-y-2">
+                    <div className="flex justify-between items-start">
+                      <div className="max-w-[70%]">
+                        <p className="text-xs font-bold text-slate-800 leading-tight">{item.nombre}</p>
+                        <p className="text-[10px] text-slate-400 font-mono mt-0.5">{item.codigo}</p>
+                      </div>
+                      <span className="px-2.5 py-1 bg-white text-rose-600 font-black text-xs rounded-lg shadow-sm border border-rose-100 shrink-0">
+                        Total: {item.total} pcs
+                      </span>
                     </div>
-                    <span className="px-2.5 py-1 bg-white text-rose-600 font-black text-xs rounded-lg shadow-sm border border-rose-100 shrink-0">
-                      {item.cantidad} pcs
-                    </span>
+
+                    {/* Apartado Desglose */}
+                    <div className="pt-2 border-t border-rose-200/60">
+                      <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Desglose por turno:</p>
+                      <div className="grid grid-cols-3 gap-1.5 text-[10px]">
+                        <div className="bg-white/90 p-1.5 rounded-lg text-center border border-slate-100 shadow-2xs">
+                          <span className="block text-slate-400 font-medium">☀️ Mañana</span>
+                          <span className="font-extrabold text-slate-800">{item.desglose.inicio_turno} pcs</span>
+                        </div>
+                        <div className="bg-white/90 p-1.5 rounded-lg text-center border border-slate-100 shadow-2xs">
+                          <span className="block text-slate-400 font-medium">⏱️ Corte</span>
+                          <span className="font-extrabold text-slate-800">{item.desglose.corte_horario} pcs</span>
+                        </div>
+                        <div className="bg-white/90 p-1.5 rounded-lg text-center border border-slate-100 shadow-2xs">
+                          <span className="block text-slate-400 font-medium">🔒 Cierre</span>
+                          <span className="font-extrabold text-slate-800">{item.desglose.fin_turno} pcs</span>
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -407,11 +434,20 @@ export default function App() {
         </div>
       )}
 
+      {/* Tarjeta Producto Nuevo con Opción de Cancelar */}
       {esNuevo && (
         <div className="mt-4 bg-white p-5 rounded-2xl shadow-lg border border-amber-200">
-          <div className="flex items-center gap-2 mb-2 text-amber-700">
-            <PackageCheck size={20} />
-            <h2 className="font-bold text-base">Producto Nuevo Detectado</h2>
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-2 text-amber-700">
+              <PackageCheck size={20} />
+              <h2 className="font-bold text-base">Producto Nuevo Detectado</h2>
+            </div>
+            <button 
+              onClick={cancelarProductoNuevo}
+              className="text-slate-400 hover:text-slate-600 transition p-1"
+            >
+              <X size={18} />
+            </button>
           </div>
           <p className="text-xs text-slate-400 mb-3 font-mono">Código: {codigoEscaneado}</p>
           <input
@@ -421,12 +457,20 @@ export default function App() {
             onChange={(e) => setNuevoNombre(e.target.value)}
             className="w-full p-3 border border-slate-200 rounded-xl mb-3 text-sm focus:outline-none focus:border-rose-400 focus:ring-2 focus:ring-rose-100"
           />
-          <button
-            onClick={crearProducto}
-            className="w-full bg-slate-900 text-white py-3 rounded-xl font-semibold flex items-center justify-center gap-1.5 text-sm shadow hover:bg-slate-800 transition"
-          >
-            <Plus size={18} /> Registrar y Continuar
-          </button>
+          <div className="space-y-2">
+            <button
+              onClick={crearProducto}
+              className="w-full bg-slate-900 text-white py-3 rounded-xl font-semibold flex items-center justify-center gap-1.5 text-sm shadow hover:bg-slate-800 transition"
+            >
+              <Plus size={18} /> Registrar y Continuar
+            </button>
+            <button
+              onClick={cancelarProductoNuevo}
+              className="w-full bg-slate-100 text-slate-600 py-2.5 rounded-xl font-semibold text-xs border border-slate-200 hover:bg-slate-200 transition"
+            >
+              Cancelar Escaneo
+            </button>
+          </div>
         </div>
       )}
 
@@ -445,9 +489,9 @@ export default function App() {
               onChange={(e) => setTipoRegistro(e.target.value)}
               className="w-full p-3 border border-slate-200 rounded-xl bg-slate-50 text-sm font-medium focus:outline-none focus:border-rose-400"
             >   
+              <option value="inicio_turno">☀️ Inicio de Turno (Mañana)</option>
               <option value="corte_horario">⏱️ Corte Horario</option>
-              <option value="inicio_turno">🔓 Inicio de Turno</option>
-              <option value="fin_turno">🔒 Fin de Turno</option>
+              <option value="fin_turno">🔒 Fin de Turno (Cierre)</option>
             </select>
           </div>
 
@@ -487,7 +531,7 @@ export default function App() {
           </button>
         </div>
       )}
-      
+
       <div className="mt-6 pt-4 border-t border-rose-100">
         <button
           onClick={exportarExcelHoy}
