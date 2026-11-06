@@ -11,7 +11,7 @@ export default function App() {
   const [scanning, setScanning] = useState(false);
   const [producto, setProducto] = useState(null);
   const [cantidad, setCantidad] = useState(1);
-  const [tipoRegistro, setTipoRegistro] = useState('corte_horario');
+  const [tipoRegistro, setTipoRegistro] = useState('inicio_turno');
   const [mensaje, setMensaje] = useState('');
   const [totalHoy, setTotalHoy] = useState(0);
 
@@ -68,7 +68,7 @@ export default function App() {
     return () => document.removeEventListener('visibilitychange', handleVisibility);
   }, [scanning]);
 
-  // Cargar totales, desglose y lista de registros editables
+  // Cargar totales únicos por producto y desglose por turno
   const cargarTotalHoy = async () => {
     if (!nombreUsuario) return;
 
@@ -83,17 +83,15 @@ export default function App() {
       .order('created_at', { ascending: false });
 
     if (!error && data) {
-      const sumaTotal = data.reduce((acc, curr) => acc + (curr.cantidad_piso || 0), 0);
-      setTotalHoy(sumaTotal);
       setRegistrosHoy(data);
 
-      // Agrupar productos con desglose por tipo de registro
+      // Agrupar productos para evitar sumar conteos repetidos de inicio y cierre
       const acumulado = {};
       data.forEach(item => {
         const nombre = item.productos?.nombre || 'Producto sin nombre';
         const codigo = item.productos?.codigo_barras || item.codigo_barras || '';
         const key = `${nombre}_${codigo}`;
-        const tipo = item.tipo_registro || 'corte_horario';
+        const tipo = item.tipo_registro || 'inicio_turno';
         const cant = item.cantidad_piso || 0;
 
         if (!acumulado[key]) {
@@ -109,7 +107,7 @@ export default function App() {
           };
         }
 
-        acumulado[key].total += cant;
+        // Registrar cantidad por evento
         if (acumulado[key].desglose[tipo] !== undefined) {
           acumulado[key].desglose[tipo] += cant;
         } else {
@@ -117,7 +115,28 @@ export default function App() {
         }
       });
 
-      setListaHoy(Object.values(acumulado));
+      // Determinar la cantidad real única por producto (prioriza Inicio de Turno)
+      const listaAgrupada = Object.values(acumulado).map(item => {
+        let totalCalculado = 0;
+        if (item.desglose.inicio_turno > 0) {
+          totalCalculado = item.desglose.inicio_turno;
+        } else if (item.desglose.corte_horario > 0) {
+          totalCalculado = item.desglose.corte_horario;
+        } else {
+          totalCalculado = item.desglose.fin_turno;
+        }
+
+        return {
+          ...item,
+          total: totalCalculado
+        };
+      });
+
+      // El total en bolsa es la suma de los conteos únicos por producto
+      const sumaTotalUnica = listaAgrupada.reduce((acc, curr) => acc + curr.total, 0);
+
+      setTotalHoy(sumaTotalUnica);
+      setListaHoy(listaAgrupada);
     }
   };
 
@@ -252,7 +271,7 @@ export default function App() {
     }
   };
 
-  // --- Funciones de Edición Directa de Registros ---
+  // --- Funciones para Editar o Eliminar Unidades de la Bolsa ---
   const iniciarEdicion = (item) => {
     setRegistroEditandoId(item.id);
     setCantEditada(item.cantidad_piso);
@@ -297,6 +316,7 @@ export default function App() {
     }
   };
 
+  // Exportación optimizada para vaciar la bolsa correctamente en iOS y Android
   const exportarExcelHoy = async () => {
     if (!nombreUsuario) return;
 
@@ -315,6 +335,7 @@ export default function App() {
       return;
     }
 
+    // 1. Preparar la hoja de Excel en memoria
     const datosFormateados = data.map(row => ({
       'Usuario': nombreUsuario,
       'Hora': new Date(row.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -329,20 +350,30 @@ export default function App() {
     const worksheet = XLSX.utils.json_to_sheet(datosFormateados);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, `Conteos_${nombreUsuario}`);
-    XLSX.writeFile(workbook, `Reporte_${nombreUsuario}_${fechaHoy}.xlsx`);
 
+    // 2. Borrar en Supabase ANTES de la descarga del archivo (evita congelamiento de red en Safari iOS)
     const idsAEliminar = data.map(item => item.id);
     const { error: deleteError } = await supabase
       .from('registros_conteo')
       .delete()
       .in('id', idsAEliminar);
 
-    if (!deleteError) {
-      setMensaje(`¡Excel de ${nombreUsuario} exportado y bolsa vaciada a 0!`);
-      setMostrarDetalleHoy(false);
-      cargarTotalHoy();
-      setTimeout(() => setMensaje(''), 4000);
+    if (deleteError) {
+      alert("Error al vaciar la bolsa en la base de datos: " + deleteError.message);
+      return;
     }
+
+    // 3. Reiniciar la bolsa a 0 en la pantalla inmediatamente
+    setTotalHoy(0);
+    setListaHoy([]);
+    setRegistrosHoy([]);
+    setMostrarDetalleHoy(false);
+    setMensaje(`¡Excel de ${nombreUsuario} exportado y bolsa vaciada a 0!`);
+
+    // 4. Iniciar la descarga del Excel al final
+    XLSX.writeFile(workbook, `Reporte_${nombreUsuario}_${fechaHoy}.xlsx`);
+
+    setTimeout(() => setMensaje(''), 4000);
   };
 
   if (!nombreUsuario || editandoUsuario) {
@@ -395,7 +426,7 @@ export default function App() {
         </div>
       </header>
 
-      {/* Sección Bolsa con Desglose y Edición Inline */}
+      {/* Sección Bolsa con Conteo Único por Producto */}
       <div className="bg-white/90 backdrop-blur border border-rose-100 rounded-2xl p-4 mb-4 shadow-sm">
         <div 
           onClick={() => setMostrarDetalleHoy(!mostrarDetalleHoy)}
@@ -416,14 +447,58 @@ export default function App() {
         </div>
 
         {mostrarDetalleHoy && (
-          <div className="mt-4 pt-3 border-t border-rose-100 space-y-3">
-            <h3 className="text-xs font-extrabold text-slate-700 uppercase tracking-wider mb-1">
-              Mis Escaneos Registrados ({registrosHoy.length})
-            </h3>
-            {registrosHoy.length === 0 ? (
-              <p className="text-xs text-slate-400 italic">No has registrado productos en tu bolsa hoy.</p>
-            ) : (
-              <div className="max-h-72 overflow-y-auto space-y-2.5 pr-1">
+          <div className="mt-4 pt-3 border-t border-rose-100 space-y-4">
+            {/* Lista agrupada de productos */}
+            <div>
+              <h3 className="text-xs font-extrabold text-slate-700 uppercase tracking-wider mb-2">
+                Resumen de Productos ({listaHoy.length})
+              </h3>
+              {listaHoy.length === 0 ? (
+                <p className="text-xs text-slate-400 italic">No has registrado productos en tu bolsa hoy.</p>
+              ) : (
+                <div className="max-h-56 overflow-y-auto space-y-2 pr-1">
+                  {listaHoy.map((item, index) => (
+                    <div key={index} className="bg-rose-50/70 p-3 rounded-xl border border-rose-100/80 space-y-2">
+                      <div className="flex justify-between items-start">
+                        <div className="max-w-[70%]">
+                          <p className="text-xs font-bold text-slate-800 leading-tight">{item.nombre}</p>
+                          <p className="text-[10px] text-slate-400 font-mono mt-0.5">{item.codigo}</p>
+                        </div>
+                        <span className="px-2.5 py-1 bg-white text-rose-600 font-black text-xs rounded-lg shadow-sm border border-rose-100 shrink-0">
+                          Total: {item.total} pcs
+                        </span>
+                      </div>
+
+                      {/* Desglose por Turno */}
+                      <div className="pt-2 border-t border-rose-200/60">
+                        <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Desglose por turno:</p>
+                        <div className="grid grid-cols-3 gap-1.5 text-[10px]">
+                          <div className="bg-white/90 p-1.5 rounded-lg text-center border border-slate-100">
+                            <span className="block text-slate-400 font-medium">🔓 Inicio</span>
+                            <span className="font-extrabold text-slate-800">{item.desglose.inicio_turno} pcs</span>
+                          </div>
+                          <div className="bg-white/90 p-1.5 rounded-lg text-center border border-slate-100">
+                            <span className="block text-slate-400 font-medium">⏱️ Corte</span>
+                            <span className="font-extrabold text-slate-800">{item.desglose.corte_horario} pcs</span>
+                          </div>
+                          <div className="bg-white/90 p-1.5 rounded-lg text-center border border-slate-100">
+                            <span className="block text-slate-400 font-medium">🔒 Cierre</span>
+                            <span className="font-extrabold text-slate-800">{item.desglose.fin_turno} pcs</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Historial Individual con Opción a Editar/Eliminar */}
+            <div className="pt-2 border-t border-slate-100">
+              <h3 className="text-xs font-extrabold text-slate-700 uppercase tracking-wider mb-2">
+                Historial de Capturas ({registrosHoy.length})
+              </h3>
+              <div className="max-h-56 overflow-y-auto space-y-2 pr-1">
                 {registrosHoy.map((item) => {
                   const nombre = item.productos?.nombre || 'Producto sin nombre';
                   const hora = new Date(item.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -434,26 +509,26 @@ export default function App() {
                     item.tipo_registro === 'fin_turno' ? '🔒 Cierre' : '⏱️ Corte';
 
                   return (
-                    <div key={item.id} className="bg-rose-50/70 p-3 rounded-xl border border-rose-100/80 space-y-2">
+                    <div key={item.id} className="bg-slate-50 p-2.5 rounded-xl border border-slate-200/80 space-y-2">
                       <div className="flex justify-between items-start gap-2">
                         <div className="max-w-[65%]">
                           <p className="text-xs font-bold text-slate-800 leading-tight">{nombre}</p>
-                          <span className="inline-block text-[10px] bg-white px-2 py-0.5 rounded font-medium text-slate-500 border border-slate-100 mt-1">
+                          <span className="inline-block text-[10px] bg-white px-2 py-0.5 rounded font-medium text-slate-500 border border-slate-200 mt-1">
                             {etiquetaEvento} • {hora}
                           </span>
                         </div>
 
                         {!esEditando ? (
                           <div className="flex items-center gap-1.5 shrink-0">
-                            <span className="px-2.5 py-1 bg-white text-rose-600 font-black text-xs rounded-lg shadow-sm border border-rose-100">
+                            <span className="px-2 py-0.5 bg-white text-slate-700 font-bold text-xs rounded shadow-2xs border border-slate-200">
                               {item.cantidad_piso} pcs
                             </span>
                             <button
                               onClick={() => iniciarEdicion(item)}
-                              className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg transition"
+                              className="p-1.5 bg-white hover:bg-slate-200 text-slate-600 rounded-lg border border-slate-200 transition"
                               title="Editar cantidad"
                             >
-                              <Pencil size={14} />
+                              <Pencil size={13} />
                             </button>
                           </div>
                         ) : (
@@ -462,45 +537,43 @@ export default function App() {
                             className="p-1.5 bg-rose-100 hover:bg-rose-200 text-rose-600 rounded-lg transition shrink-0"
                             title="Eliminar registro"
                           >
-                            <Trash2 size={14} />
+                            <Trash2 size={13} />
                           </button>
                         )}
                       </div>
 
-                      {/* Panel de Edición Inline */}
+                      {/* Panel Edición Inline */}
                       {esEditando && (
-                        <div className="pt-2 border-t border-rose-200/60 flex items-center justify-between gap-2 bg-white p-2 rounded-lg border border-slate-200">
+                        <div className="pt-2 border-t border-slate-200 flex items-center justify-between gap-2 bg-white p-2 rounded-lg">
                           <span className="text-xs font-bold text-slate-600">Corregir:</span>
                           
-                          <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-1.5">
                             <button
                               onClick={() => setCantEditada(Math.max(0, cantEditada - 1))}
-                              className="w-8 h-8 bg-slate-100 text-slate-800 font-bold rounded-md border border-slate-200 active:bg-slate-200"
+                              className="w-7 h-7 bg-slate-100 text-slate-800 font-bold rounded border border-slate-200"
                             >-</button>
                             <input
                               type="number"
                               value={cantEditada}
                               onChange={(e) => setCantEditada(parseInt(e.target.value) || 0)}
-                              className="w-12 text-center text-sm font-extrabold text-rose-600 border border-slate-200 rounded-md py-1"
+                              className="w-12 text-center text-xs font-black text-rose-600 border border-slate-200 rounded py-1"
                             />
                             <button
                               onClick={() => setCantEditada(cantEditada + 1)}
-                              className="w-8 h-8 bg-slate-100 text-slate-800 font-bold rounded-md border border-slate-200 active:bg-slate-200"
+                              className="w-7 h-7 bg-slate-100 text-slate-800 font-bold rounded border border-slate-200"
                             >+</button>
                           </div>
 
                           <div className="flex items-center gap-1">
                             <button
                               onClick={() => guardarEdicionCantidad(item.id)}
-                              className="p-2 bg-emerald-500 text-white rounded-lg hover:bg-emerald-600 transition"
-                              title="Guardar cambio"
+                              className="p-1.5 bg-emerald-500 text-white rounded-md hover:bg-emerald-600 transition"
                             >
                               <Check size={14} />
                             </button>
                             <button
                               onClick={() => setRegistroEditandoId(null)}
-                              className="p-2 bg-slate-200 text-slate-600 rounded-lg hover:bg-slate-300 transition"
-                              title="Cancelar"
+                              className="p-1.5 bg-slate-200 text-slate-600 rounded-md hover:bg-slate-300 transition"
                             >
                               <X size={14} />
                             </button>
@@ -511,7 +584,7 @@ export default function App() {
                   );
                 })}
               </div>
-            )}
+            </div>
           </div>
         )}
       </div>
@@ -544,7 +617,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Tarjeta Producto Nuevo con Opción de Cancelar */}
+      {/* Tarjeta Producto Nuevo con Cancelar */}
       {esNuevo && (
         <div className="mt-4 bg-white p-5 rounded-2xl shadow-lg border border-amber-200">
           <div className="flex items-center justify-between mb-2">
